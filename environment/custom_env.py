@@ -1,0 +1,448 @@
+"""
+Nigerian Wildlife Conservation Environment
+==========================================
+
+A custom Gymnasium environment where an RL agent manages conservation
+resources across 6 real Nigerian wildlife zones under stochastic
+climate change conditions.
+
+The agent allocates interventions monthly over a 10-year horizon
+(120 timesteps) to maximize biodiversity and ecosystem health.
+
+Compatible with Stable Baselines3 for training DQN, PPO, REINFORCE.
+"""
+
+import gymnasium as gym
+from gymnasium import spaces
+import numpy as np
+from typing import Optional, Dict, List, Tuple, Any
+
+from environment.world_model import (
+    ZONES,
+    NUM_ZONES,
+    ACTIONS,
+    NUM_ACTIONS,
+    ACTION_COSTS,
+    WildlifeZone,
+    ClimateDynamics,
+    EcologicalModel,
+    RewardCalculator,
+)
+
+
+class NigerianWildlifeConservationEnv(gym.Env):
+    """
+    Nigerian Wildlife Conservation RL Environment.
+    
+    Observation Space (continuous, per zone × 6 zones):
+        For each zone: [temperature, rainfall, vegetation_index,
+                        wildlife_pop, poaching_threat, habitat_integrity]
+        Plus global: [budget_remaining, current_timestep_normalized,
+                      num_active_events]
+        Total: 6 zones × 6 features + 3 global = 39 dimensions
+    
+    Action Space:
+        MultiDiscrete — one action per zone, each from {0..7}
+        This means the agent picks an intervention for each zone simultaneously.
+        Flattened to Discrete for DQN compatibility via a wrapper.
+    
+    Reward:
+        Composite reward balancing biodiversity, habitat health, 
+        population stability, budget efficiency, with penalties for
+        extinction and poaching. See RewardCalculator.
+    
+    Terminal Conditions:
+        - Any zone wildlife population reaches 0 (extinction → failure)
+        - Budget fully depleted
+        - 120 timesteps reached (10 years of monthly decisions)
+        - Mean ecosystem health drops below 0.1 (critical collapse)
+    """
+    
+    metadata = {"render_modes": ["human", "rgb_array", "ansi"], "render_fps": 4}
+    
+    # State features per zone
+    ZONE_FEATURES = [
+        "temperature", "rainfall", "vegetation_index",
+        "wildlife_pop", "poaching_threat", "habitat_integrity",
+    ]
+    NUM_ZONE_FEATURES = len(ZONE_FEATURES)
+    NUM_GLOBAL_FEATURES = 3  # budget, timestep, active_events
+    
+    def __init__(
+        self,
+        max_timesteps: int = 120,
+        initial_budget: float = 100.0,
+        monthly_budget_income: float = 5.0,
+        render_mode: Optional[str] = None,
+        seed: Optional[int] = None,
+        difficulty: str = "normal",  # "easy", "normal", "hard"
+    ):
+        super().__init__()
+        
+        self.max_timesteps = max_timesteps
+        self.initial_budget = initial_budget
+        self.monthly_budget_income = monthly_budget_income
+        self.render_mode = render_mode
+        self.difficulty = difficulty
+        
+        # Climate dynamics
+        self.climate = ClimateDynamics()
+        if difficulty == "hard":
+            self.climate.warming_rate = 0.008
+            self.climate.drought_probability = 0.05
+            self.climate.wildfire_probability = 0.03
+        elif difficulty == "easy":
+            self.climate.warming_rate = 0.002
+            self.climate.drought_probability = 0.01
+            self.climate.wildfire_probability = 0.01
+        
+        # Random generator
+        self._rng = np.random.default_rng(seed)
+        
+        # --- Define observation space ---
+        obs_dim = NUM_ZONES * self.NUM_ZONE_FEATURES + self.NUM_GLOBAL_FEATURES
+        # All features normalized to roughly [0, 1] except temperature
+        self.observation_space = spaces.Box(
+            low=np.zeros(obs_dim, dtype=np.float32),
+            high=np.ones(obs_dim, dtype=np.float32),
+            dtype=np.float32,
+        )
+        
+        # --- Define action space ---
+        # Agent selects one action for each of the 6 zones
+        # For SB3 DQN compatibility, we use Discrete (flattened)
+        # Total actions = NUM_ACTIONS ^ NUM_ZONES is too large (8^6 = 262144)
+        # Instead: agent picks ONE zone and ONE action per step
+        # Action = zone_id * NUM_ACTIONS + action_id
+        self.action_space = spaces.Discrete(NUM_ZONES * NUM_ACTIONS)
+        
+        # --- Internal state ---
+        self.zone_states: List[Dict[str, float]] = []
+        self.budget = 0.0
+        self.timestep = 0
+        self.episode_events: List[List[str]] = []
+        self.cumulative_reward = 0.0
+        self.episode_history: List[Dict] = []
+        
+        # Rendering
+        self._renderer = None
+    
+    def _get_initial_zone_state(self, zone: WildlifeZone) -> Dict[str, float]:
+        """Generate the initial state for a zone with slight randomness."""
+        noise = self._rng.normal(0, 0.02)
+        return {
+            "temperature": zone.base_temperature,
+            "rainfall": zone.base_rainfall,
+            "vegetation_index": np.clip(zone.base_vegetation_index + noise, 0, 1),
+            "wildlife_pop": np.clip(zone.base_wildlife_pop + noise, 0, 1),
+            "poaching_threat": np.clip(zone.base_poaching_threat + noise, 0, 1),
+            "habitat_integrity": np.clip(zone.base_habitat_integrity + noise, 0, 1),
+        }
+    
+    def _state_to_observation(self) -> np.ndarray:
+        """Convert internal state dicts to a flat normalized observation vector."""
+        obs = []
+        
+        for i, zone in enumerate(ZONES):
+            state = self.zone_states[i]
+            # Normalize each feature to [0, 1]
+            obs.append((state["temperature"] - 15.0) / 30.0)  # 15-45°C → [0, 1]
+            obs.append(state["rainfall"] / 500.0)               # 0-500mm → [0, 1]
+            obs.append(state["vegetation_index"])                # already [0, 1]
+            obs.append(state["wildlife_pop"])                    # already [0, 1]
+            obs.append(state["poaching_threat"])                 # already [0, 1]
+            obs.append(state["habitat_integrity"])               # already [0, 1]
+        
+        # Global features
+        obs.append(min(self.budget / self.initial_budget, 1.0))  # budget ratio
+        obs.append(self.timestep / self.max_timesteps)           # time progress
+        # Active events indicator
+        total_events = sum(len(e) for e in self.episode_events) if self.episode_events else 0
+        obs.append(min(total_events / 10.0, 1.0))
+        
+        return np.array(obs, dtype=np.float32)
+    
+    def _decode_action(self, action: int) -> Tuple[int, int]:
+        """Decode flat action into (zone_index, action_type)."""
+        zone_idx = action // NUM_ACTIONS
+        action_type = action % NUM_ACTIONS
+        return zone_idx, action_type
+    
+    def reset(
+        self,
+        seed: Optional[int] = None,
+        options: Optional[Dict] = None,
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
+        """Reset the environment to initial state."""
+        super().reset(seed=seed)
+        if seed is not None:
+            self._rng = np.random.default_rng(seed)
+        
+        # Initialize zone states
+        self.zone_states = [
+            self._get_initial_zone_state(zone) for zone in ZONES
+        ]
+        
+        # Initialize budget and time
+        self.budget = self.initial_budget
+        self.timestep = 0
+        self.cumulative_reward = 0.0
+        self.episode_events = [[] for _ in range(NUM_ZONES)]
+        self.episode_history = []
+        
+        obs = self._state_to_observation()
+        info = self._get_info()
+        
+        return obs, info
+    
+    def step(
+        self, action: int
+    ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
+        """
+        Execute one timestep (one month of conservation management).
+        
+        The agent selects one zone to intervene in with a specific action.
+        All other zones evolve naturally (action=0).
+        """
+        zone_idx, action_type = self._decode_action(action)
+        
+        # Build per-zone action list (only selected zone gets the action)
+        zone_actions = [0] * NUM_ZONES
+        
+        # Check if we can afford the action
+        cost = ACTION_COSTS[action_type] * self.initial_budget * 0.1
+        if self.budget >= cost:
+            zone_actions[zone_idx] = action_type
+            self.budget -= cost
+        else:
+            # Can't afford → no action taken
+            action_type = 0
+        
+        # Monthly budget income
+        self.budget += self.monthly_budget_income
+        self.budget = min(self.budget, self.initial_budget * 1.5)  # Cap budget
+        
+        # Save previous states
+        prev_states = [dict(s) for s in self.zone_states]
+        
+        # Evolve each zone
+        all_events = []
+        for i, zone in enumerate(ZONES):
+            # Get climate for this zone
+            climate = self.climate.get_climate_state(zone, self.timestep, self._rng)
+            
+            # Compute next state
+            new_state, events = EcologicalModel.compute_next_state(
+                current_state=self.zone_states[i],
+                zone=zone,
+                climate=climate,
+                action=zone_actions[i],
+                rng=self._rng,
+            )
+            
+            self.zone_states[i] = new_state
+            all_events.append(events)
+        
+        self.episode_events = all_events
+        self.timestep += 1
+        
+        # Compute reward
+        reward, reward_breakdown = RewardCalculator.compute_reward(
+            prev_states=prev_states,
+            curr_states=self.zone_states,
+            actions=zone_actions,
+            budget_remaining=self.budget,
+            total_budget=self.initial_budget,
+            events=all_events,
+        )
+        self.cumulative_reward += reward
+        
+        # Check terminal conditions
+        terminated = False
+        truncated = False
+        termination_reason = None
+        
+        # Extinction check
+        for i, state in enumerate(self.zone_states):
+            if state["wildlife_pop"] <= 0.02:
+                terminated = True
+                termination_reason = f"extinction_in_{ZONES[i].name}"
+                break
+        
+        # Budget depletion
+        if self.budget <= 0:
+            terminated = True
+            termination_reason = "budget_depleted"
+        
+        # Critical ecosystem collapse
+        mean_health = np.mean([
+            0.4 * s["wildlife_pop"] + 0.3 * s["habitat_integrity"] + 0.3 * s["vegetation_index"]
+            for s in self.zone_states
+        ])
+        if mean_health < 0.1:
+            terminated = True
+            termination_reason = "ecosystem_collapse"
+        
+        # Time limit
+        if self.timestep >= self.max_timesteps:
+            truncated = True
+            termination_reason = "time_limit"
+        
+        # Store history for analysis
+        self.episode_history.append({
+            "timestep": self.timestep,
+            "action_zone": zone_idx,
+            "action_type": action_type,
+            "action_name": ACTIONS[action_type],
+            "zone_name": ZONES[zone_idx].name,
+            "reward": reward,
+            "reward_breakdown": reward_breakdown,
+            "budget": self.budget,
+            "events": all_events,
+            "zone_states": [dict(s) for s in self.zone_states],
+        })
+        
+        obs = self._state_to_observation()
+        info = self._get_info()
+        info["reward_breakdown"] = reward_breakdown
+        info["events"] = all_events
+        info["termination_reason"] = termination_reason
+        
+        return obs, reward, terminated, truncated, info
+    
+    def _get_info(self) -> Dict[str, Any]:
+        """Return auxiliary info dict."""
+        zone_summaries = {}
+        for i, zone in enumerate(ZONES):
+            s = self.zone_states[i]
+            zone_summaries[zone.name] = {
+                "wildlife_pop": round(s["wildlife_pop"], 3),
+                "habitat_integrity": round(s["habitat_integrity"], 3),
+                "vegetation_index": round(s["vegetation_index"], 3),
+                "poaching_threat": round(s["poaching_threat"], 3),
+            }
+        
+        return {
+            "timestep": self.timestep,
+            "budget": round(self.budget, 2),
+            "cumulative_reward": round(self.cumulative_reward, 2),
+            "zone_summaries": zone_summaries,
+            "mean_wildlife_pop": round(
+                np.mean([s["wildlife_pop"] for s in self.zone_states]), 3
+            ),
+            "mean_habitat_integrity": round(
+                np.mean([s["habitat_integrity"] for s in self.zone_states]), 3
+            ),
+        }
+    
+    def render(self):
+        """Render the environment state."""
+        if self.render_mode == "ansi":
+            return self._render_ansi()
+        elif self.render_mode in ("human", "rgb_array"):
+            return self._render_visual()
+        return None
+    
+    def _render_ansi(self) -> str:
+        """Text-based rendering for terminal output."""
+        lines = [
+            f"\n{'='*70}",
+            f"  NIGERIAN WILDLIFE CONSERVATION — Month {self.timestep}/{self.max_timesteps}",
+            f"  Budget: {self.budget:.1f} | Cumulative Reward: {self.cumulative_reward:.2f}",
+            f"{'='*70}",
+        ]
+        
+        for i, zone in enumerate(ZONES):
+            s = self.zone_states[i]
+            events = self.episode_events[i] if self.episode_events else []
+            event_str = f" ⚠ {', '.join(events)}" if events else ""
+            
+            bar_pop = "█" * int(s["wildlife_pop"] * 20)
+            bar_hab = "█" * int(s["habitat_integrity"] * 20)
+            
+            lines.append(
+                f"  {zone.name:25s} | Pop: {s['wildlife_pop']:.2f} [{bar_pop:20s}] "
+                f"| Hab: {s['habitat_integrity']:.2f} [{bar_hab:20s}] "
+                f"| Poach: {s['poaching_threat']:.2f} "
+                f"| Veg: {s['vegetation_index']:.2f}"
+                f"{event_str}"
+            )
+        
+        lines.append(f"{'='*70}\n")
+        return "\n".join(lines)
+    
+    def _render_visual(self):
+        """Placeholder for Pygame rendering — implemented in rendering.py."""
+        # Import here to avoid dependency if not rendering
+        try:
+            from environment.rendering import PygameRenderer
+            if self._renderer is None:
+                self._renderer = PygameRenderer(self)
+            return self._renderer.render(self.zone_states, self.episode_events, 
+                                          self.budget, self.timestep, self.cumulative_reward)
+        except ImportError:
+            return self._render_ansi()
+    
+    def close(self):
+        """Clean up resources."""
+        if self._renderer is not None:
+            self._renderer.close()
+            self._renderer = None
+    
+    def get_zone_names(self) -> List[str]:
+        """Return list of zone names for display."""
+        return [z.name for z in ZONES]
+    
+    def get_action_name(self, action: int) -> str:
+        """Return human-readable action description."""
+        zone_idx, action_type = self._decode_action(action)
+        return f"{ACTIONS[action_type]} → {ZONES[zone_idx].name}"
+
+
+# ─────────────────────────────────────────────────────────────
+# ENVIRONMENT REGISTRATION
+# ─────────────────────────────────────────────────────────────
+
+def register_env():
+    """Register the environment with Gymnasium."""
+    gym.register(
+        id="NigerianWildlifeConservation-v0",
+        entry_point="environment.custom_env:NigerianWildlifeConservationEnv",
+        max_episode_steps=120,
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# QUICK TEST
+# ─────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    print("Testing NigerianWildlifeConservationEnv...")
+    
+    env = NigerianWildlifeConservationEnv(render_mode="ansi", seed=42)
+    obs, info = env.reset()
+    
+    print(f"Observation shape: {obs.shape}")
+    print(f"Observation space: {env.observation_space}")
+    print(f"Action space: {env.action_space}")
+    print(f"Initial info: {info}")
+    
+    # Run a few random steps
+    total_reward = 0
+    for step in range(10):
+        action = env.action_space.sample()
+        obs, reward, terminated, truncated, info = env.step(action)
+        total_reward += reward
+        
+        action_desc = env.get_action_name(action)
+        print(f"\nStep {step+1}: Action = {action_desc}")
+        print(f"  Reward: {reward:.3f} | Budget: {info['budget']}")
+        print(env.render())
+        
+        if terminated or truncated:
+            print(f"Episode ended: {info.get('termination_reason', 'unknown')}")
+            break
+    
+    print(f"\nTotal reward over {step+1} steps: {total_reward:.3f}")
+    env.close()
+    print("✓ Environment test passed!")

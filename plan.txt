@@ -1,0 +1,47 @@
+Step-by-Step Plan for Exemplary Marks
+Phase 1: Environment Design (Rubric: Environment Validity & Complexity — 10 pts)
+Step 1 — Define the world model. Design a multi-zone Nigerian ecosystem (e.g., 5–8 zones like Yankari, Cross River, Chad Basin, Okomu, etc.). Each zone has dynamic state variables: temperature, rainfall, vegetation index, wildlife population, poaching threat level, and habitat integrity. Climate changes stochastically each timestep (simulating seasonal/annual shifts), and wildlife populations respond to both climate and your agent's actions.
+Step 2 — Define the observation space. A continuous vector per zone containing temperature deviation, rainfall level, vegetation health (NDVI proxy), wildlife population, poaching pressure, and current resource allocation. This gives you a rich, multi-dimensional observation that avoids the "grid world" penalty in the rubric.
+Step 3 — Define the action space. The agent chooses how to allocate a limited budget across intervention types per zone each timestep. Actions should be exhaustive and include: deploy anti-poaching patrol, fund habitat restoration, establish water points, relocate species, do nothing (save budget), and conduct monitoring survey. Use a MultiDiscrete or flattened Discrete space. Make sure to include edge-case actions (e.g., "do nothing" or "emergency intervention") so the agent explores all possibilities — the rubric explicitly rewards this.
+Step 4 — Design the reward function. Composite reward based on: biodiversity index improvement (+), wildlife population stability (+), habitat integrity score (+), budget efficiency (+), species extinction event (large −), poaching incident (−). Document why each component exists and how it ties to real conservation goals.
+Step 5 — Define terminal conditions. Episode ends when: a species goes extinct (failure), budget is fully depleted, a fixed number of timesteps pass (e.g., 120 steps = 10 years of monthly decisions), or ecosystem health drops below critical threshold.
+Step 6 — Implement custom_env.py. Build it as a proper gymnasium.Env subclass with reset(), step(), and render(). Include stochastic climate dynamics (not deterministic — the rubric penalizes this). Use real Nigerian climate data ranges to parameterize temperature/rainfall distributions for realism.
+
+Phase 2: Visualization (Rubric: System Implementation — 10 pts)
+Step 7 — Choose Pygame for visualization. It's the most practical for your timeline and gets you into the "Good" tier minimum. To hit Exemplary, go beyond basic shapes: render a stylized map of Nigeria with zone boundaries, use icons/sprites for wildlife and rangers, color-code zones by health status, and show a resource dashboard overlay.
+Step 8 — Build rendering.py. Create a Pygame-based renderer that shows: the map with zones, agent icons moving to zones, wildlife population bars, climate indicators (color shifts for temperature), and a sidebar with current reward/budget/step info.
+Step 9 — Create the random-action static demo. Record a GIF or video of the agent taking env.action_space.sample() actions — no trained model. This demonstrates the visualization working independently of training.
+Step 10 — Create an environment diagram. A clear architectural diagram showing: Agent → Action → Environment → (State, Reward) loop, with labeled components specific to your conservation scenario. Include this in your report.
+Step 11 — (Exemplary bonus) Add JSON serialization. The rubric explicitly rewards showing how the model can integrate into a web/mobile app. Add a simple Flask or FastAPI endpoint that loads your best model, accepts a state as JSON, and returns the action. This is a small addition that pushes you from Good to Exemplary.
+
+Phase 3: Training Four RL Models (Rubric: Hyperparameter Experiments — 10 pts)
+Step 12 — Set up Stable Baselines3 training scripts. Two files: dqn_training.py and pg_training.py. All four algorithms use the same environment for fair comparison.
+Step 13 — Train DQN (Value-Based). Key hyperparameters to vary across your 10 runs: learning rate, gamma (discount factor), exploration fraction, epsilon start/end, buffer size, batch size, target network update frequency, network architecture (net_arch). Log all results.
+Step 14 — Train REINFORCE. Stable Baselines3 doesn't have vanilla REINFORCE, so you'll need to implement it manually using PyTorch (or use SB3's A2C with specific settings that approximate REINFORCE — single episode updates, no value baseline). Vary: learning rate, gamma, hidden layer sizes, number of episodes per update, entropy coefficient. Run 10 experiments.
+Step 15 — Train PPO (Policy Gradient). Hyperparameters to vary: learning rate, gamma, clip range, number of epochs per update, batch size, GAE lambda, entropy coefficient, network architecture, number of steps per rollout, value function coefficient. Run 10 experiments.
+Step 16 — Train A2C → Wait, you said no A2C. Replace with a second PPO variant or use REINFORCE with baseline as your fourth. Clarify with your instructor, but since the rubric says "four tables" and you're dropping A2C, confirm what replaces it. If it's just three algorithms (DQN, REINFORCE, PPO), make sure your 10 runs per algorithm are extra thorough.
+Step 17 — Log everything with TensorBoard/CSV. For each run, record: episode rewards, loss curves, entropy, value estimates, episode lengths. You need this data for the analysis section.
+
+Phase 4: Analysis & Report (Rubric: Discussion & Analysis — 10 pts)
+Step 18 — Generate all required plots:
+
+Cumulative reward curves for all methods (subplots, not overlapping mess)
+DQN objective/loss curves (TD loss, Q-value estimates over time)
+Policy gradient entropy curves (showing exploration decay)
+Convergence plots (when each method stabilizes)
+Generalization test (run trained agent on slightly modified environment — different climate seed)
+
+Step 19 — Write the hyperparameter tables. One table per algorithm, 10 rows each, with columns for every hyperparameter varied and the resulting metric (mean reward, convergence step, stability). Add a paragraph below each table explaining what you observed: which hyperparameters mattered most, tradeoffs between exploration and exploitation, stability patterns.
+Step 20 — Write the report (7–10 pages, PDF). Follow the provided template strictly. Keep it concise — the rubric warns against lengthy explanations. Structure: Problem statement → Environment description → Methodology → Hyperparameter tables with analysis → Visualization screenshots → Results comparison → Conclusion. Include the environment diagram from Step 10.
+
+Phase 5: Video & Submission (Rubric: Video — 5 pts)
+Step 21 — Record the demo video. Camera on, full screen shared. Script it beforehand to cover every rubric checkbox: state the problem (climate-driven wildlife conservation in Nigeria), describe agent behavior (resource allocation decisions), explain reward structure (biodiversity + population + habitat − extinction − poaching), state the objective (maximize long-term ecosystem health), run the simulation with your best model showing both the Pygame GUI and terminal verbose output, then interpret what the agent is doing and why.
+Step 22 — Final packaging.
+
+requirements.txt with all dependencies pinned
+Clean GitHub repo following the exact folder structure from the assignment
+main.py loads the best model and runs the visualization
+README.md with setup instructions
+Submit the PDF report to Canvas
+
+
