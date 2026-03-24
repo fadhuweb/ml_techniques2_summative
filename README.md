@@ -22,8 +22,7 @@ Each algorithm is trained with 10 hyperparameter configurations for comparison.
 
 ## Setup
 ```bash
-git clone https://github.com/<your_name>_rl_summative.git
-cd <your_name>_rl_summative
+git https://github.com/fadhuweb/ml_techniques2_summative.git
 pip install -r requirements.txt
 ```
 
@@ -53,7 +52,3 @@ project_root/
 ├── requirements.txt             # Project dependencies
 └── README.md                    # This file
 ```
-
-## Author
-[Your Name] — ALU [Year]
-# ml_techniques2_summative

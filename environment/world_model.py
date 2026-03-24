@@ -17,8 +17,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
 
-# ZONE DEFINITIONS
-
+# ZONE DEFINITIONS — Real Nigerian Conservation Areas
 @dataclass
 class WildlifeZone:
     """Represents a real Nigerian conservation zone with ecological parameters."""
@@ -140,10 +139,8 @@ ZONES = [
 
 NUM_ZONES = len(ZONES)
 
-# ─────────────────────────────────────────────────────────────
-# ACTION SPACE — Conservation Interventions
-# ─────────────────────────────────────────────────────────────
 
+# ACTION SPACE — Conservation Interventions
 ACTIONS = {
     0: "no_action",                 # Do nothing (save budget)
     1: "anti_poaching_patrol",      # Deploy rangers to reduce poaching
@@ -170,10 +167,8 @@ ACTION_COSTS = {
 }
 
 
-# ─────────────────────────────────────────────────────────────
-# CLIMATE DYNAMICS
-# ─────────────────────────────────────────────────────────────
 
+# CLIMATE DYNAMICS
 @dataclass
 class ClimateDynamics:
     """
@@ -429,10 +424,8 @@ class EcologicalModel:
         return new_state, events_occurred
 
 
-# ─────────────────────────────────────────────────────────────
-# REWARD FUNCTION
-# ─────────────────────────────────────────────────────────────
 
+# REWARD FUNCTION
 class RewardCalculator:
     """
     Composite reward function for the conservation agent.

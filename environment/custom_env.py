@@ -31,42 +31,22 @@ from environment.world_model import (
 
 
 class NigerianWildlifeConservationEnv(gym.Env):
-    """
-    Nigerian Wildlife Conservation RL Environment.
-    
-    Observation Space (continuous, per zone × 6 zones):
-        For each zone: [temperature, rainfall, vegetation_index,
-                        wildlife_pop, poaching_threat, habitat_integrity]
-        Plus global: [budget_remaining, current_timestep_normalized,
-                      num_active_events]
-        Total: 6 zones × 6 features + 3 global = 39 dimensions
-    
-    Action Space:
-        MultiDiscrete — one action per zone, each from {0..7}
-        This means the agent picks an intervention for each zone simultaneously.
-        Flattened to Discrete for DQN compatibility via a wrapper.
-    
-    Reward:
-        Composite reward balancing biodiversity, habitat health, 
-        population stability, budget efficiency, with penalties for
-        extinction and poaching. See RewardCalculator.
-    
-    Terminal Conditions:
-        - Any zone wildlife population reaches 0 (extinction → failure)
-        - Budget fully depleted
-        - 120 timesteps reached (10 years of monthly decisions)
-        - Mean ecosystem health drops below 0.1 (critical collapse)
-    """
-    
     metadata = {"render_modes": ["human", "rgb_array", "ansi"], "render_fps": 4}
     
     # State features per zone
     ZONE_FEATURES = [
-        "temperature", "rainfall", "vegetation_index",
-        "wildlife_pop", "poaching_threat", "habitat_integrity",
+        "temperature",          # normalized temp deviation from baseline
+        "rainfall",             # normalized rainfall level
+        "vegetation_index",     # NDVI proxy (0-1)
+        "wildlife_pop",         # wildlife population index (0-1)
+        "poaching_threat",      # poaching pressure (0-1)
+        "habitat_integrity",    # habitat health (0-1)
+        "last_action",          # last action taken in this zone (one-hot encoded → single normalized)
+        "months_since_action",  # how many months since last intervention here
+        "has_active_event",     # is there an extreme event active (0 or 1)
     ]
-    NUM_ZONE_FEATURES = len(ZONE_FEATURES)
-    NUM_GLOBAL_FEATURES = 3  # budget, timestep, active_events
+    NUM_ZONE_FEATURES = len(ZONE_FEATURES)  # 9 per zone
+    NUM_GLOBAL_FEATURES = 5  # budget, timestep, active_events, mean_pop_trend, season
     
     def __init__(
         self,
@@ -108,12 +88,7 @@ class NigerianWildlifeConservationEnv(gym.Env):
             dtype=np.float32,
         )
         
-        # --- Define action space ---
-        # Agent selects one action for each of the 6 zones
-        # For SB3 DQN compatibility, we use Discrete (flattened)
-        # Total actions = NUM_ACTIONS ^ NUM_ZONES is too large (8^6 = 262144)
-        # Instead: agent picks ONE zone and ONE action per step
-        # Action = zone_id * NUM_ACTIONS + action_id
+        
         self.action_space = spaces.Discrete(NUM_ZONES * NUM_ACTIONS)
         
         # --- Internal state ---
@@ -123,6 +98,11 @@ class NigerianWildlifeConservationEnv(gym.Env):
         self.episode_events: List[List[str]] = []
         self.cumulative_reward = 0.0
         self.episode_history: List[Dict] = []
+        
+        # Resource allocation tracking (per zone)
+        self.last_actions: np.ndarray = np.zeros(NUM_ZONES, dtype=np.float32)
+        self.months_since_action: np.ndarray = np.zeros(NUM_ZONES, dtype=np.float32)
+        self.prev_wildlife_pops: np.ndarray = np.zeros(NUM_ZONES, dtype=np.float32)
         
         # Rendering
         self._renderer = None
@@ -140,25 +120,69 @@ class NigerianWildlifeConservationEnv(gym.Env):
         }
     
     def _state_to_observation(self) -> np.ndarray:
-        """Convert internal state dicts to a flat normalized observation vector."""
+        """
+        Convert internal state to a flat normalized observation vector.
+        
+        Per zone (9 features × 6 zones = 54):
+            0: temperature       — normalized temp deviation [0, 1]
+            1: rainfall          — normalized rainfall level [0, 1]
+            2: vegetation_index  — NDVI proxy [0, 1]
+            3: wildlife_pop      — population index [0, 1]
+            4: poaching_threat   — poaching pressure [0, 1]
+            5: habitat_integrity — habitat health [0, 1]
+            6: last_action       — last action taken here (normalized)
+            7: months_since_action — months since last intervention (capped)
+            8: has_active_event  — extreme event active (0 or 1)
+        
+        Global (5 features):
+            54: budget_ratio     — remaining budget / initial budget
+            55: time_progress    — current step / max steps
+            56: active_events    — total active events across all zones
+            57: mean_pop_trend   — mean population change direction
+            58: season           — seasonal indicator (sin of month cycle)
+        
+        Total: 59 dimensions
+        """
         obs = []
         
         for i, zone in enumerate(ZONES):
             state = self.zone_states[i]
-            # Normalize each feature to [0, 1]
+            
+            # Core ecological features (6)
             obs.append((state["temperature"] - 15.0) / 30.0)  # 15-45°C → [0, 1]
             obs.append(state["rainfall"] / 500.0)               # 0-500mm → [0, 1]
             obs.append(state["vegetation_index"])                # already [0, 1]
             obs.append(state["wildlife_pop"])                    # already [0, 1]
             obs.append(state["poaching_threat"])                 # already [0, 1]
             obs.append(state["habitat_integrity"])               # already [0, 1]
+            
+            # Resource allocation features (3)
+            obs.append(self.last_actions[i])                     # last action normalized [0, 1]
+            obs.append(min(self.months_since_action[i] / 12.0, 1.0))  # capped at 12 months
+            
+            # Extreme event flag
+            has_event = 1.0 if (self.episode_events and len(self.episode_events[i]) > 0) else 0.0
+            obs.append(has_event)
         
-        # Global features
+        # Global features (5)
         obs.append(min(self.budget / self.initial_budget, 1.0))  # budget ratio
         obs.append(self.timestep / self.max_timesteps)           # time progress
-        # Active events indicator
+        
+        # Active events count (normalized)
         total_events = sum(len(e) for e in self.episode_events) if self.episode_events else 0
         obs.append(min(total_events / 10.0, 1.0))
+        
+        # Mean population trend (positive = growing, negative = declining)
+        if self.timestep > 0:
+            current_pops = np.array([s["wildlife_pop"] for s in self.zone_states])
+            pop_trend = np.mean(current_pops - self.prev_wildlife_pops)
+            obs.append(np.clip(pop_trend + 0.5, 0.0, 1.0))  # center at 0.5
+        else:
+            obs.append(0.5)  # neutral at start
+        
+        # Season indicator (cyclical encoding using sin)
+        season = (np.sin(2 * np.pi * self.timestep / 12) + 1.0) / 2.0  # [0, 1]
+        obs.append(season)
         
         return np.array(obs, dtype=np.float32)
     
@@ -189,6 +213,13 @@ class NigerianWildlifeConservationEnv(gym.Env):
         self.cumulative_reward = 0.0
         self.episode_events = [[] for _ in range(NUM_ZONES)]
         self.episode_history = []
+        
+        # Reset resource allocation tracking
+        self.last_actions = np.zeros(NUM_ZONES, dtype=np.float32)
+        self.months_since_action = np.zeros(NUM_ZONES, dtype=np.float32)
+        self.prev_wildlife_pops = np.array(
+            [s["wildlife_pop"] for s in self.zone_states], dtype=np.float32
+        )
         
         obs = self._state_to_observation()
         info = self._get_info()
@@ -245,6 +276,17 @@ class NigerianWildlifeConservationEnv(gym.Env):
         
         self.episode_events = all_events
         self.timestep += 1
+        
+        # Update resource allocation tracking
+        self.months_since_action += 1  # increment all zones
+        if action_type != 0:
+            self.last_actions[zone_idx] = action_type / (NUM_ACTIONS - 1)  # normalize to [0,1]
+            self.months_since_action[zone_idx] = 0  # reset for acted zone
+        
+        # Track population trend
+        self.prev_wildlife_pops = np.array(
+            [s["wildlife_pop"] for s in self.zone_states], dtype=np.float32
+        )
         
         # Compute reward
         reward, reward_breakdown = RewardCalculator.compute_reward(
@@ -399,10 +441,8 @@ class NigerianWildlifeConservationEnv(gym.Env):
         return f"{ACTIONS[action_type]} → {ZONES[zone_idx].name}"
 
 
-# ─────────────────────────────────────────────────────────────
-# ENVIRONMENT REGISTRATION
-# ─────────────────────────────────────────────────────────────
 
+# ENVIRONMENT REGISTRATION
 def register_env():
     """Register the environment with Gymnasium."""
     gym.register(
@@ -412,10 +452,8 @@ def register_env():
     )
 
 
-# ─────────────────────────────────────────────────────────────
-# QUICK TEST
-# ─────────────────────────────────────────────────────────────
 
+# QUICK TEST
 if __name__ == "__main__":
     print("Testing NigerianWildlifeConservationEnv...")
     
