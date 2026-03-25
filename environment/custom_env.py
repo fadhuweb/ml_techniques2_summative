@@ -31,6 +31,46 @@ from environment.world_model import (
 
 
 class NigerianWildlifeConservationEnv(gym.Env):
+    """
+    Nigerian Wildlife Conservation RL Environment.
+    
+    Observation Space (continuous, 59 dimensions):
+        Per zone (9 features × 6 zones = 54):
+            - temperature: normalized deviation from baseline [0, 1]
+            - rainfall: normalized precipitation level [0, 1]
+            - vegetation_index: NDVI proxy for vegetation health [0, 1]
+            - wildlife_pop: wildlife population index [0, 1]
+            - poaching_threat: current poaching pressure [0, 1]
+            - habitat_integrity: habitat health score [0, 1]
+            - last_action: last intervention taken in this zone [0, 1]
+            - months_since_action: months since last intervention (capped) [0, 1]
+            - has_active_event: extreme event active flag {0, 1}
+        Global (5 features):
+            - budget_ratio: remaining budget / initial budget [0, 1]
+            - time_progress: current step / max steps [0, 1]
+            - active_events: normalized count of active events [0, 1]
+            - mean_pop_trend: population change direction (0.5=stable) [0, 1]
+            - season: cyclical seasonal indicator [0, 1]
+    
+    Action Space:
+        Discrete(48) — agent picks ONE zone and ONE action per step.
+        Action = zone_id × 8 + action_id
+        8 interventions: no_action, anti_poaching_patrol, habitat_restoration,
+        water_provision, species_relocation, community_engagement,
+        wildlife_monitoring, emergency_intervention
+    
+    Reward:
+        Composite reward balancing biodiversity, habitat health, 
+        population stability, budget efficiency, with penalties for
+        extinction and poaching. See RewardCalculator.
+    
+    Terminal Conditions:
+        - Any zone wildlife population reaches 0 (extinction → failure)
+        - Budget fully depleted
+        - 120 timesteps reached (10 years of monthly decisions)
+        - Mean ecosystem health drops below 0.1 (critical collapse)
+    """
+    
     metadata = {"render_modes": ["human", "rgb_array", "ansi"], "render_fps": 4}
     
     # State features per zone
@@ -88,7 +128,12 @@ class NigerianWildlifeConservationEnv(gym.Env):
             dtype=np.float32,
         )
         
-        
+        # --- Define action space ---
+        # Agent selects one action for each of the 6 zones
+        # For SB3 DQN compatibility, we use Discrete (flattened)
+        # Total actions = NUM_ACTIONS ^ NUM_ZONES is too large (8^6 = 262144)
+        # Instead: agent picks ONE zone and ONE action per step
+        # Action = zone_id * NUM_ACTIONS + action_id
         self.action_space = spaces.Discrete(NUM_ZONES * NUM_ACTIONS)
         
         # --- Internal state ---
@@ -258,21 +303,25 @@ class NigerianWildlifeConservationEnv(gym.Env):
         
         # Evolve each zone
         all_events = []
+        invalid_actions = []
         for i, zone in enumerate(ZONES):
             # Get climate for this zone
             climate = self.climate.get_climate_state(zone, self.timestep, self._rng)
             
-            # Compute next state
-            new_state, events = EcologicalModel.compute_next_state(
+            # Compute next state (ecosystem-aware with cooldown)
+            new_state, events, action_valid = EcologicalModel.compute_next_state(
                 current_state=self.zone_states[i],
                 zone=zone,
                 climate=climate,
                 action=zone_actions[i],
                 rng=self._rng,
+                months_since_last_action=float(self.months_since_action[i]),
             )
             
             self.zone_states[i] = new_state
             all_events.append(events)
+            if not action_valid and zone_actions[i] != 0:
+                invalid_actions.append((i, zone_actions[i]))
         
         self.episode_events = all_events
         self.timestep += 1
@@ -349,6 +398,7 @@ class NigerianWildlifeConservationEnv(gym.Env):
         info["reward_breakdown"] = reward_breakdown
         info["events"] = all_events
         info["termination_reason"] = termination_reason
+        info["invalid_actions"] = invalid_actions  # actions that failed preconditions
         
         return obs, reward, terminated, truncated, info
     
@@ -441,8 +491,10 @@ class NigerianWildlifeConservationEnv(gym.Env):
         return f"{ACTIONS[action_type]} → {ZONES[zone_idx].name}"
 
 
-
+# ─────────────────────────────────────────────────────────────
 # ENVIRONMENT REGISTRATION
+# ─────────────────────────────────────────────────────────────
+
 def register_env():
     """Register the environment with Gymnasium."""
     gym.register(
@@ -452,8 +504,10 @@ def register_env():
     )
 
 
-
+# ─────────────────────────────────────────────────────────────
 # QUICK TEST
+# ─────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     print("Testing NigerianWildlifeConservationEnv...")
     

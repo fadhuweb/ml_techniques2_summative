@@ -16,8 +16,10 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
-
+# ─────────────────────────────────────────────────────────────
 # ZONE DEFINITIONS — Real Nigerian Conservation Areas
+# ─────────────────────────────────────────────────────────────
+
 @dataclass
 class WildlifeZone:
     """Represents a real Nigerian conservation zone with ecological parameters."""
@@ -139,36 +141,282 @@ ZONES = [
 
 NUM_ZONES = len(ZONES)
 
-
+# ─────────────────────────────────────────────────────────────
 # ACTION SPACE — Conservation Interventions
-ACTIONS = {
-    0: "no_action",                 # Do nothing (save budget)
-    1: "anti_poaching_patrol",      # Deploy rangers to reduce poaching
-    2: "habitat_restoration",       # Reforestation / wetland restoration
-    3: "water_provision",           # Build/maintain water points
-    4: "species_relocation",        # Relocate species to safer zones
-    5: "community_engagement",      # Fund local communities for conservation
-    6: "wildlife_monitoring",       # Deploy sensors / survey teams
-    7: "emergency_intervention",    # Emergency response (fire, flood, disease)
-}
+# ─────────────────────────────────────────────────────────────
 
+@dataclass
+class ActionDefinition:
+    """Full specification of a conservation action."""
+    id: int
+    name: str
+    display_name: str
+    description: str
+    cost: float                          # fraction of monthly budget unit
+    precondition: str                    # human-readable precondition
+    primary_effects: Dict[str, float]    # direct state variable changes
+    ecosystem_affinity: Dict[str, float] # effectiveness multiplier per ecosystem type
+    cooldown_bonus: bool                 # whether repeated use in same zone has diminishing returns
+
+
+# Complete exhaustive list of actions — 8 total including edge cases
+ACTION_DEFINITIONS = [
+    ActionDefinition(
+        id=0,
+        name="no_action",
+        display_name="Do Nothing",
+        description="Conserve budget. No intervention is deployed. "
+                    "The zone evolves under natural and climate dynamics only. "
+                    "Strategic inaction can be optimal when budget is low or a zone is stable.",
+        cost=0.00,
+        precondition="Always available",
+        primary_effects={},
+        ecosystem_affinity={
+            "guinea_savanna": 1.0, "tropical_rainforest": 1.0,
+            "sahel_wetland": 1.0, "lowland_rainforest": 1.0,
+            "montane_forest_savanna": 1.0, "floodplain_wetland": 1.0,
+        },
+        cooldown_bonus=False,
+    ),
+    ActionDefinition(
+        id=1,
+        name="anti_poaching_patrol",
+        display_name="Anti-Poaching Patrol",
+        description="Deploy armed ranger teams to deter and intercept poachers. "
+                    "Directly reduces poaching threat and provides minor population "
+                    "protection. Most effective in savanna where visibility is high.",
+        cost=0.20,
+        precondition="Budget >= cost. Poaching threat > 0.",
+        primary_effects={"poaching_threat": -0.12, "wildlife_pop": 0.01},
+        ecosystem_affinity={
+            "guinea_savanna": 1.3,        # open terrain, easy patrol
+            "tropical_rainforest": 0.7,   # dense canopy, hard to patrol
+            "sahel_wetland": 1.1,
+            "lowland_rainforest": 0.8,
+            "montane_forest_savanna": 0.9,
+            "floodplain_wetland": 1.0,
+        },
+        cooldown_bonus=True,  # repeated patrolling has diminishing returns
+    ),
+    ActionDefinition(
+        id=2,
+        name="habitat_restoration",
+        display_name="Habitat Restoration",
+        description="Fund reforestation, wetland restoration, or grassland recovery. "
+                    "Improves habitat integrity and vegetation index. Slow-acting but "
+                    "long-lasting. Most effective in degraded rainforest and wetlands.",
+        cost=0.25,
+        precondition="Budget >= cost. Habitat integrity < 0.95.",
+        primary_effects={"habitat_integrity": 0.08, "vegetation_index": 0.05},
+        ecosystem_affinity={
+            "guinea_savanna": 0.9,
+            "tropical_rainforest": 1.4,   # high restoration potential
+            "sahel_wetland": 1.2,         # wetland restoration very impactful
+            "lowland_rainforest": 1.3,
+            "montane_forest_savanna": 1.0,
+            "floodplain_wetland": 1.3,    # wetland restoration
+        },
+        cooldown_bonus=False,
+    ),
+    ActionDefinition(
+        id=3,
+        name="water_provision",
+        display_name="Water Point Establishment",
+        description="Build or maintain artificial water points, boreholes, and water "
+                    "catchment systems. Critical in dry zones and during drought. "
+                    "Directly supports wildlife survival and vegetation recovery.",
+        cost=0.15,
+        precondition="Budget >= cost.",
+        primary_effects={"wildlife_pop": 0.03, "vegetation_index": 0.02},
+        ecosystem_affinity={
+            "guinea_savanna": 1.3,        # dry-season water is critical
+            "tropical_rainforest": 0.5,   # abundant natural water
+            "sahel_wetland": 1.5,         # extremely water-scarce
+            "lowland_rainforest": 0.6,
+            "montane_forest_savanna": 1.0,
+            "floodplain_wetland": 0.7,    # natural water but seasonal
+        },
+        cooldown_bonus=False,
+    ),
+    ActionDefinition(
+        id=4,
+        name="species_relocation",
+        display_name="Species Relocation",
+        description="Translocate vulnerable species from high-threat zones to safer "
+                    "habitat. Most expensive regular action. Only effective if the "
+                    "source zone has wildlife to move and target zone has habitat capacity.",
+        cost=0.30,
+        precondition="Budget >= cost. Source zone wildlife_pop > 0.15. "
+                     "Habitat integrity > 0.3 in target zone.",
+        primary_effects={"wildlife_pop": 0.04},
+        ecosystem_affinity={
+            "guinea_savanna": 1.0,
+            "tropical_rainforest": 0.8,   # sensitive species, risky to move
+            "sahel_wetland": 0.9,
+            "lowland_rainforest": 0.8,
+            "montane_forest_savanna": 1.1,
+            "floodplain_wetland": 0.9,
+        },
+        cooldown_bonus=True,  # can't keep relocating to the same place
+    ),
+    ActionDefinition(
+        id=5,
+        name="community_engagement",
+        display_name="Community Engagement",
+        description="Fund local community conservation programs, education, and "
+                    "alternative livelihood projects. Reduces poaching through social "
+                    "pressure and improves habitat through community land management. "
+                    "Cheapest intervention with compounding long-term benefits.",
+        cost=0.10,
+        precondition="Budget >= cost.",
+        primary_effects={"poaching_threat": -0.08, "habitat_integrity": 0.03},
+        ecosystem_affinity={
+            "guinea_savanna": 1.2,
+            "tropical_rainforest": 1.1,
+            "sahel_wetland": 1.3,         # communities heavily dependent on wetlands
+            "lowland_rainforest": 1.1,
+            "montane_forest_savanna": 1.0,
+            "floodplain_wetland": 1.3,
+        },
+        cooldown_bonus=False,  # community work compounds
+    ),
+    ActionDefinition(
+        id=6,
+        name="wildlife_monitoring",
+        display_name="Wildlife Monitoring Survey",
+        description="Deploy camera traps, GPS collars, drone surveys, and field "
+                    "teams to assess wildlife status. Provides intelligence that "
+                    "slightly reduces poaching (detection effect) and marginally "
+                    "supports population through early warning of threats.",
+        cost=0.12,
+        precondition="Budget >= cost.",
+        primary_effects={"poaching_threat": -0.03, "wildlife_pop": 0.01},
+        ecosystem_affinity={
+            "guinea_savanna": 1.1,
+            "tropical_rainforest": 1.2,   # camera traps very effective in forest
+            "sahel_wetland": 1.0,
+            "lowland_rainforest": 1.2,
+            "montane_forest_savanna": 1.1,
+            "floodplain_wetland": 0.9,
+        },
+        cooldown_bonus=True,  # diminishing info returns
+    ),
+    ActionDefinition(
+        id=7,
+        name="emergency_intervention",
+        display_name="Emergency Intervention",
+        description="Rapid-response deployment for acute crises: wildfire suppression, "
+                    "flood rescue, disease outbreak containment, or mass-poaching "
+                    "response. Most expensive action but provides large immediate "
+                    "benefits. Designed for use during extreme events.",
+        cost=0.35,
+        precondition="Budget >= cost. Ideally used during active extreme event.",
+        primary_effects={
+            "wildlife_pop": 0.06,
+            "habitat_integrity": 0.05,
+            "vegetation_index": 0.04,
+        },
+        ecosystem_affinity={
+            "guinea_savanna": 1.0,
+            "tropical_rainforest": 1.1,
+            "sahel_wetland": 1.2,
+            "lowland_rainforest": 1.0,
+            "montane_forest_savanna": 1.0,
+            "floodplain_wetland": 1.1,
+        },
+        cooldown_bonus=False,
+    ),
+]
+
+# Quick-access lookups (backward compatible with existing code)
+ACTIONS = {a.id: a.name for a in ACTION_DEFINITIONS}
+ACTION_COSTS = {a.id: a.cost for a in ACTION_DEFINITIONS}
 NUM_ACTIONS = len(ACTIONS)
 
-# Cost per action (fraction of monthly budget)
-ACTION_COSTS = {
-    0: 0.00,   # no_action
-    1: 0.20,   # anti_poaching_patrol
-    2: 0.25,   # habitat_restoration
-    3: 0.15,   # water_provision
-    4: 0.30,   # species_relocation
-    5: 0.10,   # community_engagement
-    6: 0.12,   # wildlife_monitoring
-    7: 0.35,   # emergency_intervention
+# Build ecosystem affinity lookup: action_id → ecosystem_type → multiplier
+ACTION_ECOSYSTEM_AFFINITY = {
+    a.id: a.ecosystem_affinity for a in ACTION_DEFINITIONS
 }
 
 
+def get_action_detail(action_id: int) -> ActionDefinition:
+    """Retrieve full action definition by ID."""
+    return ACTION_DEFINITIONS[action_id]
 
+
+def validate_action_precondition(
+    action_id: int,
+    zone_state: Dict[str, float],
+    budget: float,
+    initial_budget: float,
+) -> Tuple[bool, str]:
+    """
+    Check if an action's preconditions are met.
+    
+    Returns (is_valid, reason_if_invalid).
+    """
+    action = ACTION_DEFINITIONS[action_id]
+    cost = action.cost * initial_budget * 0.1
+    
+    # Budget check
+    if budget < cost:
+        return False, f"Insufficient budget ({budget:.1f} < {cost:.1f})"
+    
+    # Action-specific preconditions
+    if action_id == 2:  # habitat_restoration
+        if zone_state["habitat_integrity"] >= 0.95:
+            return False, "Habitat already near-pristine (>= 0.95)"
+    
+    if action_id == 4:  # species_relocation
+        if zone_state["wildlife_pop"] <= 0.15:
+            return False, f"Population too low to relocate ({zone_state['wildlife_pop']:.2f} <= 0.15)"
+        if zone_state["habitat_integrity"] <= 0.3:
+            return False, f"Habitat too degraded for relocation ({zone_state['habitat_integrity']:.2f} <= 0.3)"
+    
+    return True, "OK"
+
+
+def get_effective_action_effects(
+    action_id: int,
+    ecosystem_type: str,
+    months_since_last: float = 0,
+) -> Dict[str, float]:
+    """
+    Compute the actual action effects after applying ecosystem affinity
+    and cooldown diminishing returns.
+    
+    Parameters
+    ----------
+    action_id : int
+    ecosystem_type : str (e.g., "guinea_savanna")
+    months_since_last : float, months since this action was last used in this zone
+    
+    Returns
+    -------
+    Dict of state variable deltas with ecosystem-adjusted magnitudes.
+    """
+    action = ACTION_DEFINITIONS[action_id]
+    affinity = action.ecosystem_affinity.get(ecosystem_type, 1.0)
+    
+    # Cooldown diminishing returns: if the same zone was acted on recently
+    # and the action has cooldown_bonus=True, reduce effectiveness
+    cooldown_multiplier = 1.0
+    if action.cooldown_bonus and months_since_last < 3:
+        # 50% effectiveness if repeated within 1 month, scaling back up over 3 months
+        cooldown_multiplier = 0.5 + 0.5 * (months_since_last / 3.0)
+    
+    # Apply both multipliers to base effects
+    effective_effects = {}
+    for var, delta in action.primary_effects.items():
+        effective_effects[var] = delta * affinity * cooldown_multiplier
+    
+    return effective_effects
+
+
+# ─────────────────────────────────────────────────────────────
 # CLIMATE DYNAMICS
+# ─────────────────────────────────────────────────────────────
+
 @dataclass
 class ClimateDynamics:
     """
@@ -281,7 +529,7 @@ class EcologicalModel:
     POACHING_RANDOM_DRIFT = 0.05              # Monthly random change in threat
     POACHING_BASE_INCREASE = 0.01             # Poaching tends to increase over time
     
-    # --- Action effects ---
+    # --- Action effects (base values — actual effects computed via get_effective_action_effects) ---
     ACTION_EFFECTS = {
         0: {},  # no_action
         1: {"poaching_threat": -0.12, "wildlife_pop": 0.01},           # anti_poaching
@@ -323,7 +571,8 @@ class EcologicalModel:
         climate: Dict[str, float],
         action: int,
         rng: np.random.Generator,
-    ) -> Dict[str, float]:
+        months_since_last_action: float = 12.0,
+    ) -> Tuple[Dict[str, float], List[str], bool]:
         """
         Transition function: compute the next ecological state for a zone.
         
@@ -336,11 +585,13 @@ class EcologicalModel:
         climate : output from ClimateDynamics.get_climate_state()
         action : int, action taken in this zone
         rng : numpy random generator
+        months_since_last_action : float, for cooldown diminishing returns
         
         Returns
         -------
         next_state : dict with same keys as current_state
         events_occurred : list of event names that fired this step
+        action_was_valid : bool, whether the action preconditions were met
         """
         model = EcologicalModel
         
@@ -354,15 +605,12 @@ class EcologicalModel:
         new_rain = zone.base_rainfall * climate["rainfall_factor"]
         
         # --- 2. Vegetation dynamics ---
-        # Rainfall effect (positive when rain is near optimal, negative when too low/high)
         rain_ratio = new_rain / zone.base_rainfall
         rain_effect = model.VEGETATION_RAINFALL_SENSITIVITY * (rain_ratio - 1.0)
         rain_effect = np.clip(rain_effect, -0.10, 0.10)
         
-        # Temperature effect (slight negative when warmer than baseline)
         temp_effect = model.VEGETATION_TEMP_SENSITIVITY * climate["temp_deviation"]
         
-        # Natural recovery/degradation
         if veg < zone.base_vegetation_index:
             veg_natural = model.VEGETATION_RECOVERY_RATE * (zone.base_vegetation_index - veg)
         else:
@@ -371,17 +619,14 @@ class EcologicalModel:
         new_veg = veg + rain_effect + temp_effect + veg_natural
         
         # --- 3. Wildlife population dynamics ---
-        # Carrying capacity depends on vegetation and habitat
         carrying_capacity = 0.5 * veg + 0.3 * hab + 0.2 * (rain_ratio)
         carrying_capacity = np.clip(carrying_capacity, 0.1, 1.0)
         
-        # Logistic growth toward carrying capacity
         if pop < carrying_capacity:
             pop_growth = model.WILDLIFE_GROWTH_RATE * pop * (1 - pop / carrying_capacity)
         else:
             pop_growth = -model.WILDLIFE_DECLINE_RATE * (pop - carrying_capacity)
         
-        # Poaching impact
         poaching_loss = model.WILDLIFE_POACHING_IMPACT * poach
         
         new_pop = pop + pop_growth + poaching_loss
@@ -394,12 +639,29 @@ class EcologicalModel:
         poach_drift = rng.normal(0, model.POACHING_RANDOM_DRIFT)
         new_poach = poach + model.POACHING_BASE_INCREASE + poach_drift
         
-        # --- 6. Apply action effects ---
-        action_effects = model.ACTION_EFFECTS.get(action, {})
-        new_veg += action_effects.get("vegetation_index", 0)
-        new_pop += action_effects.get("wildlife_pop", 0)
-        new_poach += action_effects.get("poaching_threat", 0)
-        new_hab += action_effects.get("habitat_integrity", 0)
+        # --- 6. Apply action effects (ecosystem-aware with precondition check) ---
+        action_was_valid = True
+        if action != 0:
+            # Check preconditions
+            is_valid, reason = validate_action_precondition(
+                action, current_state, budget=999.0, initial_budget=100.0
+            )
+            # Note: budget check is handled in custom_env.py step(),
+            # here we only check ecological preconditions (pop/habitat thresholds)
+            # We pass budget=999 to skip the budget check at this level
+            
+            if is_valid:
+                # Get ecosystem-aware effects with cooldown
+                effective_effects = get_effective_action_effects(
+                    action, zone.ecosystem_type, months_since_last_action
+                )
+                new_veg += effective_effects.get("vegetation_index", 0)
+                new_pop += effective_effects.get("wildlife_pop", 0)
+                new_poach += effective_effects.get("poaching_threat", 0)
+                new_hab += effective_effects.get("habitat_integrity", 0)
+            else:
+                # Precondition failed — action has no effect (budget still spent)
+                action_was_valid = False
         
         # --- 7. Apply extreme event impacts ---
         events_occurred = []
@@ -421,11 +683,13 @@ class EcologicalModel:
             "habitat_integrity": np.clip(new_hab, 0.0, 1.0),
         }
         
-        return new_state, events_occurred
+        return new_state, events_occurred, action_was_valid
 
 
-
+# ─────────────────────────────────────────────────────────────
 # REWARD FUNCTION
+# ─────────────────────────────────────────────────────────────
+
 class RewardCalculator:
     """
     Composite reward function for the conservation agent.
