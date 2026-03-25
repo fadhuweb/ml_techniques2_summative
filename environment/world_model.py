@@ -1,25 +1,9 @@
-"""
-World Model: Nigerian Wildlife Conservation Environment
-========================================================
-
-This module defines the ecological world model for the RL environment.
-It encodes real Nigerian conservation zones, endemic species, climate
-dynamics, and the interplay between agent actions and ecosystem health.
-
-The agent acts as a conservation resource manager allocating a limited
-budget across 6 real Nigerian wildlife zones, making monthly decisions
-over a 10-year horizon (120 timesteps) to maximize biodiversity and
-ecosystem health under stochastic climate change.
-"""
-
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
 
-# ─────────────────────────────────────────────────────────────
-# ZONE DEFINITIONS — Real Nigerian Conservation Areas
-# ─────────────────────────────────────────────────────────────
 
+# ZONE DEFINITIONS — Real Nigerian Conservation Areas
 @dataclass
 class WildlifeZone:
     """Represents a real Nigerian conservation zone with ecological parameters."""
@@ -350,11 +334,7 @@ def validate_action_precondition(
     budget: float,
     initial_budget: float,
 ) -> Tuple[bool, str]:
-    """
-    Check if an action's preconditions are met.
     
-    Returns (is_valid, reason_if_invalid).
-    """
     action = ACTION_DEFINITIONS[action_id]
     cost = action.cost * initial_budget * 0.1
     
@@ -381,20 +361,7 @@ def get_effective_action_effects(
     ecosystem_type: str,
     months_since_last: float = 0,
 ) -> Dict[str, float]:
-    """
-    Compute the actual action effects after applying ecosystem affinity
-    and cooldown diminishing returns.
     
-    Parameters
-    ----------
-    action_id : int
-    ecosystem_type : str (e.g., "guinea_savanna")
-    months_since_last : float, months since this action was last used in this zone
-    
-    Returns
-    -------
-    Dict of state variable deltas with ecosystem-adjusted magnitudes.
-    """
     action = ACTION_DEFINITIONS[action_id]
     affinity = action.ecosystem_affinity.get(ecosystem_type, 1.0)
     
@@ -413,10 +380,8 @@ def get_effective_action_effects(
     return effective_effects
 
 
-# ─────────────────────────────────────────────────────────────
-# CLIMATE DYNAMICS
-# ─────────────────────────────────────────────────────────────
 
+# CLIMATE DYNAMICS
 @dataclass
 class ClimateDynamics:
     """
@@ -492,10 +457,7 @@ class ClimateDynamics:
         }
 
 
-# ─────────────────────────────────────────────────────────────
 # ECOLOGICAL DYNAMICS — How state variables interact
-# ─────────────────────────────────────────────────────────────
-
 class EcologicalModel:
     """
     Models how climate, actions, and current state interact to produce
@@ -704,67 +666,6 @@ ZONE_CONSERVATION_PRIORITY = {
 
 
 class RewardCalculator:
-    """
-    Composite reward function for the conservation agent.
-    
-    Each component maps to a real conservation objective:
-    
-    1. BIODIVERSITY INDEX (+)
-       WHY: The core goal of conservation is maintaining viable wildlife
-       populations. We use a priority-weighted mean across zones so that
-       critically endangered species (Cross River Gorilla, Forest Elephant)
-       contribute more to reward than common species. This mirrors how
-       conservation funding is allocated in practice — IUCN Red List status
-       drives resource priority.
-    
-    2. HABITAT HEALTH (+)
-       WHY: Healthy habitat is the foundation of species survival.
-       Habitat integrity determines carrying capacity — degraded habitat
-       cannot support populations even with anti-poaching efforts.
-       This rewards proactive restoration over reactive crisis management.
-    
-    3. VEGETATION RECOVERY BONUS (+)
-       WHY: NDVI (vegetation greenness) is the most commonly used remote
-       sensing indicator for ecosystem monitoring. Rewarding vegetation
-       improvement incentivizes the agent to address root causes (habitat
-       restoration, water provision) rather than only treating symptoms.
-    
-    4. POPULATION STABILITY (+)
-       WHY: Conservation success is measured not just by population size
-       but by population trend. A stable or growing population indicates
-       sustainable management. Sharp drops indicate policy failure and
-       trigger emergency responses in real wildlife management.
-    
-    5. BUDGET EFFICIENCY (+)
-       WHY: Real conservation operates under severe budget constraints.
-       The agent should achieve outcomes with minimal spending, freeing
-       resources for future crises. This prevents the naive strategy of
-       spending everything immediately.
-    
-    6. EXTINCTION PENALTY (large −)
-       WHY: Species extinction is irreversible and represents total
-       conservation failure. The penalty is deliberately massive to make
-       the agent strongly averse to letting any zone reach zero population.
-       A cascading penalty applies when multiple zones go critical.
-    
-    7. POACHING PENALTY (−)
-       WHY: Poaching pressure is a leading indicator of future population
-       decline. Penalizing high poaching threat incentivizes preventive
-       action (patrols, community engagement) rather than waiting for
-       population loss.
-    
-    8. EXTREME EVENT RESPONSE BONUS (+)
-       WHY: Timely response to natural disasters (fire, flood, drought)
-       is critical in real conservation. This rewards the agent for
-       deploying emergency intervention when events are active, teaching
-       situational awareness.
-    
-    9. INVALID ACTION PENALTY (−)
-       WHY: Wasting budget on actions that fail preconditions (e.g.,
-       relocating from an empty zone) represents poor planning. Real
-       conservation managers are held accountable for resource misallocation.
-    """
-    
     # Reward component weights
     W_BIODIVERSITY = 3.0
     W_HABITAT = 2.0

@@ -492,14 +492,15 @@ class NigerianWildlifeConservationEnv(gym.Env):
         return "\n".join(lines)
     
     def _render_visual(self):
-        """Placeholder for Pygame rendering — implemented in rendering.py."""
-        # Import here to avoid dependency if not rendering
+        """Render using the Arcade (OpenGL-based) dashboard."""
         try:
-            from environment.rendering import PygameRenderer
+            from environment.rendering import ArcadeRenderer
             if self._renderer is None:
-                self._renderer = PygameRenderer(self)
-            return self._renderer.render(self.zone_states, self.episode_events, 
-                                          self.budget, self.timestep, self.cumulative_reward)
+                self._renderer = ArcadeRenderer(self)
+            return self._renderer.render(
+                self.zone_states, self.episode_events,
+                self.budget, self.timestep, self.cumulative_reward,
+            )
         except ImportError:
             return self._render_ansi()
     
