@@ -14,7 +14,7 @@ ecosystem health under stochastic climate change.
 
 import numpy as np
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 # ─────────────────────────────────────────────────────────────
 # ZONE DEFINITIONS — Real Nigerian Conservation Areas
@@ -690,27 +690,92 @@ class EcologicalModel:
 # REWARD FUNCTION
 # ─────────────────────────────────────────────────────────────
 
+# Species conservation priority weights per zone
+# Higher weight = more globally endangered species in this zone
+# Based on IUCN Red List status of key species
+ZONE_CONSERVATION_PRIORITY = {
+    0: 1.0,   # Yankari — elephants (Endangered), lions (Critically Endangered in W. Africa)
+    1: 1.5,   # Cross River — Cross River Gorilla (Critically Endangered, <300 left)
+    2: 0.8,   # Chad Basin — migratory birds (Least Concern), Dama Gazelle (Critically Endangered)
+    3: 1.3,   # Okomu — Forest Elephant (Critically Endangered), Pangolin (Endangered)
+    4: 1.2,   # Gashaka Gumti — Nigeria-Cameroon Chimpanzee (Endangered)
+    5: 0.9,   # Hadejia-Nguru — migratory waterfowl, Sitatunga (Least Concern)
+}
+
+
 class RewardCalculator:
     """
     Composite reward function for the conservation agent.
     
-    Components:
-    - Biodiversity index: weighted sum of wildlife populations across zones
-    - Habitat health: mean habitat integrity
-    - Population stability: penalizes large drops in wildlife
-    - Budget efficiency: rewards achieving goals with less spending
-    - Extinction penalty: massive penalty if any zone's pop hits 0
-    - Poaching incidents: penalty proportional to poaching pressure
+    Each component maps to a real conservation objective:
+    
+    1. BIODIVERSITY INDEX (+)
+       WHY: The core goal of conservation is maintaining viable wildlife
+       populations. We use a priority-weighted mean across zones so that
+       critically endangered species (Cross River Gorilla, Forest Elephant)
+       contribute more to reward than common species. This mirrors how
+       conservation funding is allocated in practice — IUCN Red List status
+       drives resource priority.
+    
+    2. HABITAT HEALTH (+)
+       WHY: Healthy habitat is the foundation of species survival.
+       Habitat integrity determines carrying capacity — degraded habitat
+       cannot support populations even with anti-poaching efforts.
+       This rewards proactive restoration over reactive crisis management.
+    
+    3. VEGETATION RECOVERY BONUS (+)
+       WHY: NDVI (vegetation greenness) is the most commonly used remote
+       sensing indicator for ecosystem monitoring. Rewarding vegetation
+       improvement incentivizes the agent to address root causes (habitat
+       restoration, water provision) rather than only treating symptoms.
+    
+    4. POPULATION STABILITY (+)
+       WHY: Conservation success is measured not just by population size
+       but by population trend. A stable or growing population indicates
+       sustainable management. Sharp drops indicate policy failure and
+       trigger emergency responses in real wildlife management.
+    
+    5. BUDGET EFFICIENCY (+)
+       WHY: Real conservation operates under severe budget constraints.
+       The agent should achieve outcomes with minimal spending, freeing
+       resources for future crises. This prevents the naive strategy of
+       spending everything immediately.
+    
+    6. EXTINCTION PENALTY (large −)
+       WHY: Species extinction is irreversible and represents total
+       conservation failure. The penalty is deliberately massive to make
+       the agent strongly averse to letting any zone reach zero population.
+       A cascading penalty applies when multiple zones go critical.
+    
+    7. POACHING PENALTY (−)
+       WHY: Poaching pressure is a leading indicator of future population
+       decline. Penalizing high poaching threat incentivizes preventive
+       action (patrols, community engagement) rather than waiting for
+       population loss.
+    
+    8. EXTREME EVENT RESPONSE BONUS (+)
+       WHY: Timely response to natural disasters (fire, flood, drought)
+       is critical in real conservation. This rewards the agent for
+       deploying emergency intervention when events are active, teaching
+       situational awareness.
+    
+    9. INVALID ACTION PENALTY (−)
+       WHY: Wasting budget on actions that fail preconditions (e.g.,
+       relocating from an empty zone) represents poor planning. Real
+       conservation managers are held accountable for resource misallocation.
     """
     
     # Reward component weights
     W_BIODIVERSITY = 3.0
     W_HABITAT = 2.0
+    W_VEGETATION_RECOVERY = 1.0
     W_STABILITY = 1.5
     W_BUDGET_EFFICIENCY = 0.5
     W_EXTINCTION_PENALTY = -50.0
+    W_CASCADE_EXTINCTION = -25.0     # additional per-zone if multiple go critical
     W_POACHING_PENALTY = -1.0
     W_EXTREME_EVENT_RESPONSE = 2.0
+    W_INVALID_ACTION_PENALTY = -1.5
     
     @staticmethod
     def compute_reward(
@@ -720,6 +785,7 @@ class RewardCalculator:
         budget_remaining: float,
         total_budget: float,
         events: List[List[str]],
+        invalid_actions: Optional[List] = None,
     ) -> Tuple[float, Dict[str, float]]:
         """
         Compute the total reward and its components.
@@ -731,6 +797,7 @@ class RewardCalculator:
         budget_remaining : remaining budget after actions
         total_budget : total budget for the episode
         events : list of event lists per zone
+        invalid_actions : list of (zone_idx, action_id) tuples that failed preconditions
         
         Returns
         -------
@@ -739,64 +806,89 @@ class RewardCalculator:
         """
         calc = RewardCalculator
         num_zones = len(curr_states)
+        if invalid_actions is None:
+            invalid_actions = []
         
-        # --- Biodiversity index (mean wildlife pop) ---
-        biodiversity = np.mean([s["wildlife_pop"] for s in curr_states])
+        # --- 1. Biodiversity index (priority-weighted mean wildlife pop) ---
+        weighted_pops = [
+            curr_states[i]["wildlife_pop"] * ZONE_CONSERVATION_PRIORITY.get(i, 1.0)
+            for i in range(num_zones)
+        ]
+        total_weight = sum(ZONE_CONSERVATION_PRIORITY.get(i, 1.0) for i in range(num_zones))
+        biodiversity = sum(weighted_pops) / total_weight
         biodiversity_reward = calc.W_BIODIVERSITY * biodiversity
         
-        # --- Habitat health ---
+        # --- 2. Habitat health ---
         habitat_health = np.mean([s["habitat_integrity"] for s in curr_states])
         habitat_reward = calc.W_HABITAT * habitat_health
         
-        # --- Population stability (penalize drops) ---
-        pop_changes = [
-            curr_states[i]["wildlife_pop"] - prev_states[i]["wildlife_pop"]
+        # --- 3. Vegetation recovery bonus ---
+        veg_improvements = [
+            max(0, curr_states[i]["vegetation_index"] - prev_states[i]["vegetation_index"])
             for i in range(num_zones)
         ]
-        # Only penalize decreases, don't reward increases here (handled by biodiversity)
-        stability_penalty = calc.W_STABILITY * sum(min(0, pc) for pc in pop_changes)
+        vegetation_bonus = calc.W_VEGETATION_RECOVERY * sum(veg_improvements)
         
-        # --- Budget efficiency ---
+        # --- 4. Population stability (penalize drops, weighted by priority) ---
+        stability_penalty = 0.0
+        for i in range(num_zones):
+            pop_change = curr_states[i]["wildlife_pop"] - prev_states[i]["wildlife_pop"]
+            if pop_change < 0:
+                priority = ZONE_CONSERVATION_PRIORITY.get(i, 1.0)
+                stability_penalty += pop_change * priority
+        stability_penalty *= calc.W_STABILITY
+        
+        # --- 5. Budget efficiency ---
         budget_ratio = budget_remaining / max(total_budget, 1e-6)
         efficiency_reward = calc.W_BUDGET_EFFICIENCY * budget_ratio * biodiversity
         
-        # --- Extinction penalty ---
+        # --- 6. Extinction penalty (with cascading multiplier) ---
         extinction_penalty = 0.0
-        for s in curr_states:
-            if s["wildlife_pop"] <= 0.02:  # Near-extinction threshold
-                extinction_penalty += calc.W_EXTINCTION_PENALTY
+        critical_zones = sum(1 for s in curr_states if s["wildlife_pop"] <= 0.02)
+        if critical_zones > 0:
+            extinction_penalty = calc.W_EXTINCTION_PENALTY  # base penalty
+            if critical_zones > 1:
+                # Cascading: each additional critical zone adds extra penalty
+                extinction_penalty += calc.W_CASCADE_EXTINCTION * (critical_zones - 1)
         
-        # --- Poaching penalty ---
+        # --- 7. Poaching penalty ---
         poaching_penalty = calc.W_POACHING_PENALTY * np.mean(
             [s["poaching_threat"] for s in curr_states]
         )
         
-        # --- Extreme event response bonus ---
+        # --- 8. Extreme event response bonus ---
         event_response_bonus = 0.0
         for i in range(num_zones):
             if events[i] and actions[i] == 7:  # Emergency intervention during event
                 event_response_bonus += calc.W_EXTREME_EVENT_RESPONSE
         
+        # --- 9. Invalid action penalty ---
+        invalid_penalty = calc.W_INVALID_ACTION_PENALTY * len(invalid_actions)
+        
         # --- Total ---
         total = (
             biodiversity_reward
             + habitat_reward
+            + vegetation_bonus
             + stability_penalty
             + efficiency_reward
             + extinction_penalty
             + poaching_penalty
             + event_response_bonus
+            + invalid_penalty
         )
         
         breakdown = {
-            "biodiversity": biodiversity_reward,
-            "habitat_health": habitat_reward,
-            "stability": stability_penalty,
-            "budget_efficiency": efficiency_reward,
-            "extinction_penalty": extinction_penalty,
-            "poaching_penalty": poaching_penalty,
-            "event_response": event_response_bonus,
-            "total": total,
+            "biodiversity": round(biodiversity_reward, 4),
+            "habitat_health": round(habitat_reward, 4),
+            "vegetation_recovery": round(vegetation_bonus, 4),
+            "stability": round(stability_penalty, 4),
+            "budget_efficiency": round(efficiency_reward, 4),
+            "extinction_penalty": round(extinction_penalty, 4),
+            "poaching_penalty": round(poaching_penalty, 4),
+            "event_response": round(event_response_bonus, 4),
+            "invalid_action_penalty": round(invalid_penalty, 4),
+            "total": round(total, 4),
         }
         
         return total, breakdown

@@ -345,6 +345,7 @@ class NigerianWildlifeConservationEnv(gym.Env):
             budget_remaining=self.budget,
             total_budget=self.initial_budget,
             events=all_events,
+            invalid_actions=invalid_actions,
         )
         self.cumulative_reward += reward
         
@@ -353,28 +354,37 @@ class NigerianWildlifeConservationEnv(gym.Env):
         truncated = False
         termination_reason = None
         
-        # Extinction check
+        # Extinction check (with cascading detection)
+        critical_zones = []
         for i, state in enumerate(self.zone_states):
             if state["wildlife_pop"] <= 0.02:
-                terminated = True
-                termination_reason = f"extinction_in_{ZONES[i].name}"
-                break
+                critical_zones.append(ZONES[i].name)
         
-        # Budget depletion
-        if self.budget <= 0:
+        if len(critical_zones) >= 1:
+            terminated = True
+            if len(critical_zones) >= 2:
+                termination_reason = f"cascading_extinction_in_{'+'.join(critical_zones)}"
+            else:
+                termination_reason = f"extinction_in_{critical_zones[0]}"
+        
+        # Budget depletion (cannot afford even the cheapest non-free action)
+        min_action_cost = min(c for c in ACTION_COSTS.values() if c > 0) * self.initial_budget * 0.1
+        if self.budget < min_action_cost and not terminated:
             terminated = True
             termination_reason = "budget_depleted"
         
-        # Critical ecosystem collapse
-        mean_health = np.mean([
-            0.4 * s["wildlife_pop"] + 0.3 * s["habitat_integrity"] + 0.3 * s["vegetation_index"]
-            for s in self.zone_states
+        # Critical ecosystem collapse (weighted by conservation priority)
+        from environment.world_model import ZONE_CONSERVATION_PRIORITY
+        weighted_health = np.mean([
+            (0.4 * s["wildlife_pop"] + 0.3 * s["habitat_integrity"] + 0.3 * s["vegetation_index"])
+            * ZONE_CONSERVATION_PRIORITY.get(i, 1.0)
+            for i, s in enumerate(self.zone_states)
         ])
-        if mean_health < 0.1:
+        if weighted_health < 0.1 and not terminated:
             terminated = True
             termination_reason = "ecosystem_collapse"
         
-        # Time limit
+        # Time limit (truncation, not termination — important for RL)
         if self.timestep >= self.max_timesteps:
             truncated = True
             termination_reason = "time_limit"
@@ -437,30 +447,48 @@ class NigerianWildlifeConservationEnv(gym.Env):
     
     def _render_ansi(self) -> str:
         """Text-based rendering for terminal output."""
+        # Season name from timestep
+        month_names = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+        year = self.timestep // 12 + 1
+        month = month_names[self.timestep % 12]
+        
+        # Last action taken (from history)
+        last_action_str = "None"
+        if self.episode_history:
+            last = self.episode_history[-1]
+            last_action_str = f"{last['action_name']} → {last['zone_name']}"
+        
         lines = [
-            f"\n{'='*70}",
-            f"  NIGERIAN WILDLIFE CONSERVATION — Month {self.timestep}/{self.max_timesteps}",
-            f"  Budget: {self.budget:.1f} | Cumulative Reward: {self.cumulative_reward:.2f}",
-            f"{'='*70}",
+            f"\n{'='*80}",
+            f"  NIGERIAN WILDLIFE CONSERVATION — Year {year}, {month} (Step {self.timestep}/{self.max_timesteps})",
+            f"  Budget: {self.budget:.1f}/{self.initial_budget:.0f} | Reward: {self.cumulative_reward:+.2f} | Action: {last_action_str}",
+            f"{'='*80}",
+            f"  {'Zone':25s} | {'Pop':5s} | {'Hab':5s} | {'Poach':5s} | {'Veg':5s} | {'Events':20s}",
+            f"  {'-'*74}",
         ]
         
         for i, zone in enumerate(ZONES):
             s = self.zone_states[i]
             events = self.episode_events[i] if self.episode_events else []
-            event_str = f" ⚠ {', '.join(events)}" if events else ""
+            event_str = ", ".join(events) if events else "-"
             
-            bar_pop = "█" * int(s["wildlife_pop"] * 20)
-            bar_hab = "█" * int(s["habitat_integrity"] * 20)
+            # Color-code population status
+            pop_indicator = "OK" if s["wildlife_pop"] > 0.3 else ("LOW" if s["wildlife_pop"] > 0.1 else "CRIT")
             
             lines.append(
-                f"  {zone.name:25s} | Pop: {s['wildlife_pop']:.2f} [{bar_pop:20s}] "
-                f"| Hab: {s['habitat_integrity']:.2f} [{bar_hab:20s}] "
-                f"| Poach: {s['poaching_threat']:.2f} "
-                f"| Veg: {s['vegetation_index']:.2f}"
-                f"{event_str}"
+                f"  {zone.name:25s} | {s['wildlife_pop']:.2f} | {s['habitat_integrity']:.2f} "
+                f"| {s['poaching_threat']:.2f}  | {s['vegetation_index']:.2f} "
+                f"| {event_str:20s} [{pop_indicator}]"
             )
         
-        lines.append(f"{'='*70}\n")
+        # Show reward breakdown if available
+        if self.episode_history:
+            rb = self.episode_history[-1]["reward_breakdown"]
+            lines.append(f"  {'-'*74}")
+            components = [f"{k}={v:+.2f}" for k, v in rb.items() if k != "total"]
+            lines.append(f"  Reward: {', '.join(components)}")
+        
+        lines.append(f"{'='*80}\n")
         return "\n".join(lines)
     
     def _render_visual(self):
@@ -489,6 +517,87 @@ class NigerianWildlifeConservationEnv(gym.Env):
         """Return human-readable action description."""
         zone_idx, action_type = self._decode_action(action)
         return f"{ACTIONS[action_type]} → {ZONES[zone_idx].name}"
+    
+    def get_episode_summary(self) -> Dict[str, Any]:
+        """
+        Generate a comprehensive episode summary for post-training analysis.
+        
+        Returns a dict with:
+        - overall metrics (total reward, episode length, termination reason)
+        - per-zone final states and trajectories
+        - action distribution (which actions were used, how often, where)
+        - event log (all extreme events that occurred)
+        - reward component breakdown over time
+        """
+        if not self.episode_history:
+            return {"error": "No episode history available. Run an episode first."}
+        
+        num_steps = len(self.episode_history)
+        last = self.episode_history[-1]
+        
+        # Action distribution
+        action_counts = {}
+        zone_action_counts = {z.name: {} for z in ZONES}
+        for entry in self.episode_history:
+            a_name = entry["action_name"]
+            z_name = entry["zone_name"]
+            action_counts[a_name] = action_counts.get(a_name, 0) + 1
+            zone_action_counts[z_name][a_name] = zone_action_counts[z_name].get(a_name, 0) + 1
+        
+        # Event log
+        all_events = []
+        for entry in self.episode_history:
+            for i, zone_events in enumerate(entry["events"]):
+                for event in zone_events:
+                    all_events.append({
+                        "timestep": entry["timestep"],
+                        "zone": ZONES[i].name,
+                        "event": event,
+                    })
+        
+        # Reward trajectory
+        reward_trajectory = [e["reward"] for e in self.episode_history]
+        reward_components_over_time = [e["reward_breakdown"] for e in self.episode_history]
+        
+        # Per-zone population trajectories
+        zone_pop_trajectories = {z.name: [] for z in ZONES}
+        zone_hab_trajectories = {z.name: [] for z in ZONES}
+        for entry in self.episode_history:
+            for i, zone in enumerate(ZONES):
+                zone_pop_trajectories[zone.name].append(
+                    entry["zone_states"][i]["wildlife_pop"]
+                )
+                zone_hab_trajectories[zone.name].append(
+                    entry["zone_states"][i]["habitat_integrity"]
+                )
+        
+        # Final state summary
+        final_states = {}
+        for i, zone in enumerate(ZONES):
+            s = last["zone_states"][i]
+            final_states[zone.name] = {
+                "wildlife_pop": round(s["wildlife_pop"], 4),
+                "habitat_integrity": round(s["habitat_integrity"], 4),
+                "vegetation_index": round(s["vegetation_index"], 4),
+                "poaching_threat": round(s["poaching_threat"], 4),
+            }
+        
+        return {
+            "episode_length": num_steps,
+            "total_reward": round(self.cumulative_reward, 4),
+            "mean_reward_per_step": round(self.cumulative_reward / max(num_steps, 1), 4),
+            "termination_reason": last.get("termination_reason", "unknown"),
+            "final_budget": round(self.budget, 2),
+            "action_distribution": action_counts,
+            "zone_action_distribution": zone_action_counts,
+            "total_extreme_events": len(all_events),
+            "event_log": all_events,
+            "reward_trajectory": reward_trajectory,
+            "reward_components": reward_components_over_time,
+            "zone_population_trajectories": zone_pop_trajectories,
+            "zone_habitat_trajectories": zone_hab_trajectories,
+            "final_zone_states": final_states,
+        }
 
 
 # ─────────────────────────────────────────────────────────────
