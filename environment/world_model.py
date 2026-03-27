@@ -1,3 +1,5 @@
+
+
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
@@ -125,10 +127,8 @@ ZONES = [
 
 NUM_ZONES = len(ZONES)
 
-# ─────────────────────────────────────────────────────────────
-# ACTION SPACE — Conservation Interventions
-# ─────────────────────────────────────────────────────────────
 
+# ACTION SPACE — Conservation Interventions
 @dataclass
 class ActionDefinition:
     """Full specification of a conservation action."""
@@ -171,7 +171,7 @@ ACTION_DEFINITIONS = [
                     "protection. Most effective in savanna where visibility is high.",
         cost=0.20,
         precondition="Budget >= cost. Poaching threat > 0.",
-        primary_effects={"poaching_threat": -0.12, "wildlife_pop": 0.01},
+        primary_effects={"poaching_threat": -0.15, "wildlife_pop": 0.02},
         ecosystem_affinity={
             "guinea_savanna": 1.3,        # open terrain, easy patrol
             "tropical_rainforest": 0.7,   # dense canopy, hard to patrol
@@ -191,7 +191,7 @@ ACTION_DEFINITIONS = [
                     "long-lasting. Most effective in degraded rainforest and wetlands.",
         cost=0.25,
         precondition="Budget >= cost. Habitat integrity < 0.95.",
-        primary_effects={"habitat_integrity": 0.08, "vegetation_index": 0.05},
+        primary_effects={"habitat_integrity": 0.10, "vegetation_index": 0.07},
         ecosystem_affinity={
             "guinea_savanna": 0.9,
             "tropical_rainforest": 1.4,   # high restoration potential
@@ -211,7 +211,7 @@ ACTION_DEFINITIONS = [
                     "Directly supports wildlife survival and vegetation recovery.",
         cost=0.15,
         precondition="Budget >= cost.",
-        primary_effects={"wildlife_pop": 0.03, "vegetation_index": 0.02},
+        primary_effects={"wildlife_pop": 0.04, "vegetation_index": 0.03},
         ecosystem_affinity={
             "guinea_savanna": 1.3,        # dry-season water is critical
             "tropical_rainforest": 0.5,   # abundant natural water
@@ -232,7 +232,7 @@ ACTION_DEFINITIONS = [
         cost=0.30,
         precondition="Budget >= cost. Source zone wildlife_pop > 0.15. "
                      "Habitat integrity > 0.3 in target zone.",
-        primary_effects={"wildlife_pop": 0.04},
+        primary_effects={"wildlife_pop": 0.05},
         ecosystem_affinity={
             "guinea_savanna": 1.0,
             "tropical_rainforest": 0.8,   # sensitive species, risky to move
@@ -253,7 +253,7 @@ ACTION_DEFINITIONS = [
                     "Cheapest intervention with compounding long-term benefits.",
         cost=0.10,
         precondition="Budget >= cost.",
-        primary_effects={"poaching_threat": -0.08, "habitat_integrity": 0.03},
+        primary_effects={"poaching_threat": -0.10, "habitat_integrity": 0.04},
         ecosystem_affinity={
             "guinea_savanna": 1.2,
             "tropical_rainforest": 1.1,
@@ -274,7 +274,7 @@ ACTION_DEFINITIONS = [
                     "supports population through early warning of threats.",
         cost=0.12,
         precondition="Budget >= cost.",
-        primary_effects={"poaching_threat": -0.03, "wildlife_pop": 0.01},
+        primary_effects={"poaching_threat": -0.05, "wildlife_pop": 0.02},
         ecosystem_affinity={
             "guinea_savanna": 1.1,
             "tropical_rainforest": 1.2,   # camera traps very effective in forest
@@ -296,9 +296,9 @@ ACTION_DEFINITIONS = [
         cost=0.35,
         precondition="Budget >= cost. Ideally used during active extreme event.",
         primary_effects={
-            "wildlife_pop": 0.06,
-            "habitat_integrity": 0.05,
-            "vegetation_index": 0.04,
+            "wildlife_pop": 0.08,
+            "habitat_integrity": 0.06,
+            "vegetation_index": 0.05,
         },
         ecosystem_affinity={
             "guinea_savanna": 1.0,
@@ -334,7 +334,11 @@ def validate_action_precondition(
     budget: float,
     initial_budget: float,
 ) -> Tuple[bool, str]:
+    """
+    Check if an action's preconditions are met.
     
+    Returns (is_valid, reason_if_invalid).
+    """
     action = ACTION_DEFINITIONS[action_id]
     cost = action.cost * initial_budget * 0.1
     
@@ -361,7 +365,20 @@ def get_effective_action_effects(
     ecosystem_type: str,
     months_since_last: float = 0,
 ) -> Dict[str, float]:
+    """
+    Compute the actual action effects after applying ecosystem affinity
+    and cooldown diminishing returns.
     
+    Parameters
+    ----------
+    action_id : int
+    ecosystem_type : str (e.g., "guinea_savanna")
+    months_since_last : float, months since this action was last used in this zone
+    
+    Returns
+    -------
+    Dict of state variable deltas with ecosystem-adjusted magnitudes.
+    """
     action = ACTION_DEFINITIONS[action_id]
     affinity = action.ecosystem_affinity.get(ecosystem_type, 1.0)
     
@@ -405,10 +422,10 @@ class ClimateDynamics:
     rain_noise_std: float = 0.25
     
     # Extreme event probability per zone per timestep
-    drought_probability: float = 0.03
-    flood_probability: float = 0.02
-    wildfire_probability: float = 0.02
-    disease_outbreak_probability: float = 0.015
+    drought_probability: float = 0.02
+    flood_probability: float = 0.015
+    wildfire_probability: float = 0.015
+    disease_outbreak_probability: float = 0.01
     
     def get_climate_state(
         self, 
@@ -457,6 +474,7 @@ class ClimateDynamics:
         }
 
 
+
 # ECOLOGICAL DYNAMICS — How state variables interact
 class EcologicalModel:
     """
@@ -471,58 +489,58 @@ class EcologicalModel:
     """
     
     # --- Vegetation dynamics ---
-    VEGETATION_RAINFALL_SENSITIVITY = 0.15    # How much rainfall affects NDVI
-    VEGETATION_TEMP_SENSITIVITY = -0.02       # High temp slightly reduces vegetation
-    VEGETATION_RECOVERY_RATE = 0.03           # Natural monthly recovery rate
-    VEGETATION_DEGRADATION_RATE = 0.02        # Natural monthly degradation rate
+    VEGETATION_RAINFALL_SENSITIVITY = 0.10    # How much rainfall affects NDVI
+    VEGETATION_TEMP_SENSITIVITY = -0.008      # High temp slightly reduces vegetation
+    VEGETATION_RECOVERY_RATE = 0.035          # Natural monthly recovery rate
+    VEGETATION_DEGRADATION_RATE = 0.01        # Natural monthly degradation rate
     
     # --- Wildlife population dynamics ---
-    WILDLIFE_GROWTH_RATE = 0.02               # Natural monthly growth when conditions good
-    WILDLIFE_DECLINE_RATE = 0.03              # Decline when conditions bad
-    WILDLIFE_POACHING_IMPACT = -0.05          # Population loss per unit poaching
+    WILDLIFE_GROWTH_RATE = 0.03               # Natural monthly growth
+    WILDLIFE_DECLINE_RATE = 0.02              # Decline when conditions bad
+    WILDLIFE_POACHING_IMPACT = -0.025         # Population loss per unit poaching
     WILDLIFE_VEGETATION_DEPENDENCY = 0.3      # How much wildlife depends on vegetation
     WILDLIFE_WATER_DEPENDENCY = 0.2           # How much wildlife depends on water
     
     # --- Habitat integrity dynamics ---
-    HABITAT_NATURAL_DEGRADATION = 0.005       # Monthly natural degradation
-    HABITAT_CLIMATE_STRESS_FACTOR = 0.01      # Additional degradation from climate
+    HABITAT_NATURAL_DEGRADATION = 0.002       # Monthly natural degradation
+    HABITAT_CLIMATE_STRESS_FACTOR = 0.004     # Additional degradation from climate
     
     # --- Poaching dynamics ---
-    POACHING_RANDOM_DRIFT = 0.05              # Monthly random change in threat
-    POACHING_BASE_INCREASE = 0.01             # Poaching tends to increase over time
+    POACHING_RANDOM_DRIFT = 0.025             # Monthly random change
+    POACHING_BASE_INCREASE = 0.002            # Poaching growth rate (very slow)
     
     # --- Action effects (base values — actual effects computed via get_effective_action_effects) ---
     ACTION_EFFECTS = {
         0: {},  # no_action
-        1: {"poaching_threat": -0.12, "wildlife_pop": 0.01},           # anti_poaching
-        2: {"habitat_integrity": 0.08, "vegetation_index": 0.05},      # habitat_restoration
-        3: {"wildlife_pop": 0.03, "vegetation_index": 0.02},           # water_provision
-        4: {"wildlife_pop": 0.04},                                     # species_relocation
-        5: {"poaching_threat": -0.08, "habitat_integrity": 0.03},      # community_engagement
-        6: {"poaching_threat": -0.03, "wildlife_pop": 0.01},           # wildlife_monitoring
-        7: {"wildlife_pop": 0.06, "habitat_integrity": 0.05,           # emergency_intervention
-            "vegetation_index": 0.04},
+        1: {"poaching_threat": -0.14, "wildlife_pop": 0.015},          # anti_poaching
+        2: {"habitat_integrity": 0.09, "vegetation_index": 0.06},      # habitat_restoration
+        3: {"wildlife_pop": 0.035, "vegetation_index": 0.025},         # water_provision
+        4: {"wildlife_pop": 0.045},                                    # species_relocation
+        5: {"poaching_threat": -0.09, "habitat_integrity": 0.035},     # community_engagement
+        6: {"poaching_threat": -0.04, "wildlife_pop": 0.015},          # wildlife_monitoring
+        7: {"wildlife_pop": 0.07, "habitat_integrity": 0.055,          # emergency_intervention
+            "vegetation_index": 0.045},
     }
     
-    # --- Extreme event impacts ---
+    # --- Extreme event impacts (reduced to be challenging but survivable) ---
     EVENT_IMPACTS = {
         "drought": {
-            "vegetation_index": -0.15,
-            "wildlife_pop": -0.08,
-            "habitat_integrity": -0.05,
+            "vegetation_index": -0.08,
+            "wildlife_pop": -0.04,
+            "habitat_integrity": -0.03,
         },
         "flood": {
-            "vegetation_index": -0.05,
-            "wildlife_pop": -0.06,
-            "habitat_integrity": -0.08,
+            "vegetation_index": -0.03,
+            "wildlife_pop": -0.03,
+            "habitat_integrity": -0.05,
         },
         "wildfire": {
-            "vegetation_index": -0.20,
-            "wildlife_pop": -0.10,
-            "habitat_integrity": -0.12,
+            "vegetation_index": -0.12,
+            "wildlife_pop": -0.05,
+            "habitat_integrity": -0.07,
         },
         "disease_outbreak": {
-            "wildlife_pop": -0.15,
+            "wildlife_pop": -0.08,
         },
     }
     
@@ -648,13 +666,8 @@ class EcologicalModel:
         return new_state, events_occurred, action_was_valid
 
 
-# ─────────────────────────────────────────────────────────────
-# REWARD FUNCTION
-# ─────────────────────────────────────────────────────────────
 
-# Species conservation priority weights per zone
-# Higher weight = more globally endangered species in this zone
-# Based on IUCN Red List status of key species
+# REWARD FUNCTION
 ZONE_CONSERVATION_PRIORITY = {
     0: 1.0,   # Yankari — elephants (Endangered), lions (Critically Endangered in W. Africa)
     1: 1.5,   # Cross River — Cross River Gorilla (Critically Endangered, <300 left)
@@ -666,17 +679,78 @@ ZONE_CONSERVATION_PRIORITY = {
 
 
 class RewardCalculator:
+    """
+    Composite reward function for the conservation agent.
+    
+    Each component maps to a real conservation objective:
+    
+    1. BIODIVERSITY INDEX (+)
+       WHY: The core goal of conservation is maintaining viable wildlife
+       populations. We use a priority-weighted mean across zones so that
+       critically endangered species (Cross River Gorilla, Forest Elephant)
+       contribute more to reward than common species. This mirrors how
+       conservation funding is allocated in practice — IUCN Red List status
+       drives resource priority.
+    
+    2. HABITAT HEALTH (+)
+       WHY: Healthy habitat is the foundation of species survival.
+       Habitat integrity determines carrying capacity — degraded habitat
+       cannot support populations even with anti-poaching efforts.
+       This rewards proactive restoration over reactive crisis management.
+    
+    3. VEGETATION RECOVERY BONUS (+)
+       WHY: NDVI (vegetation greenness) is the most commonly used remote
+       sensing indicator for ecosystem monitoring. Rewarding vegetation
+       improvement incentivizes the agent to address root causes (habitat
+       restoration, water provision) rather than only treating symptoms.
+    
+    4. POPULATION STABILITY (+)
+       WHY: Conservation success is measured not just by population size
+       but by population trend. A stable or growing population indicates
+       sustainable management. Sharp drops indicate policy failure and
+       trigger emergency responses in real wildlife management.
+    
+    5. BUDGET EFFICIENCY (+)
+       WHY: Real conservation operates under severe budget constraints.
+       The agent should achieve outcomes with minimal spending, freeing
+       resources for future crises. This prevents the naive strategy of
+       spending everything immediately.
+    
+    6. EXTINCTION PENALTY (large −)
+       WHY: Species extinction is irreversible and represents total
+       conservation failure. The penalty is deliberately massive to make
+       the agent strongly averse to letting any zone reach zero population.
+       A cascading penalty applies when multiple zones go critical.
+    
+    7. POACHING PENALTY (−)
+       WHY: Poaching pressure is a leading indicator of future population
+       decline. Penalizing high poaching threat incentivizes preventive
+       action (patrols, community engagement) rather than waiting for
+       population loss.
+    
+    8. EXTREME EVENT RESPONSE BONUS (+)
+       WHY: Timely response to natural disasters (fire, flood, drought)
+       is critical in real conservation. This rewards the agent for
+       deploying emergency intervention when events are active, teaching
+       situational awareness.
+    
+    9. INVALID ACTION PENALTY (−)
+       WHY: Wasting budget on actions that fail preconditions (e.g.,
+       relocating from an empty zone) represents poor planning. Real
+       conservation managers are held accountable for resource misallocation.
+    """
+    
     # Reward component weights
     W_BIODIVERSITY = 3.0
     W_HABITAT = 2.0
     W_VEGETATION_RECOVERY = 1.0
     W_STABILITY = 1.5
     W_BUDGET_EFFICIENCY = 0.5
-    W_EXTINCTION_PENALTY = -50.0
-    W_CASCADE_EXTINCTION = -25.0     # additional per-zone if multiple go critical
+    W_LOW_POP_PENALTY = -2.0          # per-zone penalty for pop < 0.15 (graduated)
+    W_EXTINCTION_PENALTY = -20.0      # one-time penalty when zone NEWLY crosses below 0.05
     W_POACHING_PENALTY = -1.0
     W_EXTREME_EVENT_RESPONSE = 2.0
-    W_INVALID_ACTION_PENALTY = -1.5
+    W_INVALID_ACTION_PENALTY = -1.0
     
     @staticmethod
     def compute_reward(
@@ -743,14 +817,23 @@ class RewardCalculator:
         budget_ratio = budget_remaining / max(total_budget, 1e-6)
         efficiency_reward = calc.W_BUDGET_EFFICIENCY * budget_ratio * biodiversity
         
-        # --- 6. Extinction penalty (with cascading multiplier) ---
+        # --- 6. Low population penalty (graduated, not binary) ---
+        # Zones with pop < 0.15 get a proportional penalty
+        # Zones that NEWLY dropped below 0.05 get a one-time extinction penalty
+        low_pop_penalty = 0.0
         extinction_penalty = 0.0
-        critical_zones = sum(1 for s in curr_states if s["wildlife_pop"] <= 0.02)
-        if critical_zones > 0:
-            extinction_penalty = calc.W_EXTINCTION_PENALTY  # base penalty
-            if critical_zones > 1:
-                # Cascading: each additional critical zone adds extra penalty
-                extinction_penalty += calc.W_CASCADE_EXTINCTION * (critical_zones - 1)
+        for i in range(num_zones):
+            pop = curr_states[i]["wildlife_pop"]
+            prev_pop = prev_states[i]["wildlife_pop"]
+            priority = ZONE_CONSERVATION_PRIORITY.get(i, 1.0)
+            
+            if pop < 0.15:
+                # Graduated: the lower the pop, the harsher the penalty
+                low_pop_penalty += calc.W_LOW_POP_PENALTY * (0.15 - pop) * priority
+            
+            # One-time extinction event (crossed threshold this step)
+            if pop <= 0.05 and prev_pop > 0.05:
+                extinction_penalty += calc.W_EXTINCTION_PENALTY * priority
         
         # --- 7. Poaching penalty ---
         poaching_penalty = calc.W_POACHING_PENALTY * np.mean(
@@ -773,6 +856,7 @@ class RewardCalculator:
             + vegetation_bonus
             + stability_penalty
             + efficiency_reward
+            + low_pop_penalty
             + extinction_penalty
             + poaching_penalty
             + event_response_bonus
@@ -785,6 +869,7 @@ class RewardCalculator:
             "vegetation_recovery": round(vegetation_bonus, 4),
             "stability": round(stability_penalty, 4),
             "budget_efficiency": round(efficiency_reward, 4),
+            "low_pop_penalty": round(low_pop_penalty, 4),
             "extinction_penalty": round(extinction_penalty, 4),
             "poaching_penalty": round(poaching_penalty, 4),
             "event_response": round(event_response_bonus, 4),

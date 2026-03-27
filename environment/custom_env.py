@@ -1,17 +1,3 @@
-"""
-Nigerian Wildlife Conservation Environment
-==========================================
-
-A custom Gymnasium environment where an RL agent manages conservation
-resources across 6 real Nigerian wildlife zones under stochastic
-climate change conditions.
-
-The agent allocates interventions monthly over a 10-year horizon
-(120 timesteps) to maximize biodiversity and ecosystem health.
-
-Compatible with Stable Baselines3 for training DQN, PPO, REINFORCE.
-"""
-
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
@@ -31,46 +17,6 @@ from environment.world_model import (
 
 
 class NigerianWildlifeConservationEnv(gym.Env):
-    """
-    Nigerian Wildlife Conservation RL Environment.
-    
-    Observation Space (continuous, 59 dimensions):
-        Per zone (9 features × 6 zones = 54):
-            - temperature: normalized deviation from baseline [0, 1]
-            - rainfall: normalized precipitation level [0, 1]
-            - vegetation_index: NDVI proxy for vegetation health [0, 1]
-            - wildlife_pop: wildlife population index [0, 1]
-            - poaching_threat: current poaching pressure [0, 1]
-            - habitat_integrity: habitat health score [0, 1]
-            - last_action: last intervention taken in this zone [0, 1]
-            - months_since_action: months since last intervention (capped) [0, 1]
-            - has_active_event: extreme event active flag {0, 1}
-        Global (5 features):
-            - budget_ratio: remaining budget / initial budget [0, 1]
-            - time_progress: current step / max steps [0, 1]
-            - active_events: normalized count of active events [0, 1]
-            - mean_pop_trend: population change direction (0.5=stable) [0, 1]
-            - season: cyclical seasonal indicator [0, 1]
-    
-    Action Space:
-        Discrete(48) — agent picks ONE zone and ONE action per step.
-        Action = zone_id × 8 + action_id
-        8 interventions: no_action, anti_poaching_patrol, habitat_restoration,
-        water_provision, species_relocation, community_engagement,
-        wildlife_monitoring, emergency_intervention
-    
-    Reward:
-        Composite reward balancing biodiversity, habitat health, 
-        population stability, budget efficiency, with penalties for
-        extinction and poaching. See RewardCalculator.
-    
-    Terminal Conditions:
-        - Any zone wildlife population reaches 0 (extinction → failure)
-        - Budget fully depleted
-        - 120 timesteps reached (10 years of monthly decisions)
-        - Mean ecosystem health drops below 0.1 (critical collapse)
-    """
-    
     metadata = {"render_modes": ["human", "rgb_array", "ansi"], "render_fps": 4}
     
     # State features per zone
@@ -129,11 +75,6 @@ class NigerianWildlifeConservationEnv(gym.Env):
         )
         
         # --- Define action space ---
-        # Agent selects one action for each of the 6 zones
-        # For SB3 DQN compatibility, we use Discrete (flattened)
-        # Total actions = NUM_ACTIONS ^ NUM_ZONES is too large (8^6 = 262144)
-        # Instead: agent picks ONE zone and ONE action per step
-        # Action = zone_id * NUM_ACTIONS + action_id
         self.action_space = spaces.Discrete(NUM_ZONES * NUM_ACTIONS)
         
         # --- Internal state ---
@@ -165,29 +106,6 @@ class NigerianWildlifeConservationEnv(gym.Env):
         }
     
     def _state_to_observation(self) -> np.ndarray:
-        """
-        Convert internal state to a flat normalized observation vector.
-        
-        Per zone (9 features × 6 zones = 54):
-            0: temperature       — normalized temp deviation [0, 1]
-            1: rainfall          — normalized rainfall level [0, 1]
-            2: vegetation_index  — NDVI proxy [0, 1]
-            3: wildlife_pop      — population index [0, 1]
-            4: poaching_threat   — poaching pressure [0, 1]
-            5: habitat_integrity — habitat health [0, 1]
-            6: last_action       — last action taken here (normalized)
-            7: months_since_action — months since last intervention (capped)
-            8: has_active_event  — extreme event active (0 or 1)
-        
-        Global (5 features):
-            54: budget_ratio     — remaining budget / initial budget
-            55: time_progress    — current step / max steps
-            56: active_events    — total active events across all zones
-            57: mean_pop_trend   — mean population change direction
-            58: season           — seasonal indicator (sin of month cycle)
-        
-        Total: 59 dimensions
-        """
         obs = []
         
         for i, zone in enumerate(ZONES):
@@ -355,17 +273,20 @@ class NigerianWildlifeConservationEnv(gym.Env):
         termination_reason = None
         
         # Extinction check (with cascading detection)
+        # Single zone going critical is penalized via reward but doesn't end episode
+        # Episode only terminates if 2+ zones go critical (cascading failure)
         critical_zones = []
         for i, state in enumerate(self.zone_states):
-            if state["wildlife_pop"] <= 0.02:
+            if state["wildlife_pop"] <= 0.01:  # true extinction threshold
                 critical_zones.append(ZONES[i].name)
         
-        if len(critical_zones) >= 1:
+        if len(critical_zones) >= 2:
             terminated = True
-            if len(critical_zones) >= 2:
-                termination_reason = f"cascading_extinction_in_{'+'.join(critical_zones)}"
-            else:
-                termination_reason = f"extinction_in_{critical_zones[0]}"
+            termination_reason = f"cascading_extinction_in_{'+'.join(critical_zones)}"
+        elif len(critical_zones) == 1:
+            # Single extinction — heavy penalty in reward but episode continues
+            # (agent can still try to save remaining zones)
+            pass
         
         # Budget depletion (cannot afford even the cheapest non-free action)
         min_action_cost = min(c for c in ACTION_COSTS.values() if c > 0) * self.initial_budget * 0.1
@@ -601,10 +522,8 @@ class NigerianWildlifeConservationEnv(gym.Env):
         }
 
 
-# ─────────────────────────────────────────────────────────────
-# ENVIRONMENT REGISTRATION
-# ─────────────────────────────────────────────────────────────
 
+# ENVIRONMENT REGISTRATION
 def register_env():
     """Register the environment with Gymnasium."""
     gym.register(
@@ -614,10 +533,8 @@ def register_env():
     )
 
 
-# ─────────────────────────────────────────────────────────────
-# QUICK TEST
-# ─────────────────────────────────────────────────────────────
 
+# QUICK TEST
 if __name__ == "__main__":
     print("Testing NigerianWildlifeConservationEnv...")
     
