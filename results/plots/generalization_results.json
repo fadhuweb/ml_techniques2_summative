@@ -1,0 +1,98 @@
+{
+  "dqn": [
+    {
+      "label": "Training seed",
+      "mean_reward": 336.2974875546853,
+      "std_reward": 19.83839308751968,
+      "survival_rate": 1.0
+    },
+    {
+      "label": "New seed A",
+      "mean_reward": 336.7721194627208,
+      "std_reward": 16.212859763159937,
+      "survival_rate": 1.0
+    },
+    {
+      "label": "New seed B",
+      "mean_reward": 341.0660579951426,
+      "std_reward": 21.759533851523898,
+      "survival_rate": 1.0
+    },
+    {
+      "label": "Easy climate",
+      "mean_reward": 336.2974875546853,
+      "std_reward": 19.83839308751968,
+      "survival_rate": 1.0
+    },
+    {
+      "label": "Hard climate",
+      "mean_reward": 336.2974875546853,
+      "std_reward": 19.83839308751968,
+      "survival_rate": 1.0
+    }
+  ],
+  "ppo": [
+    {
+      "label": "Training seed",
+      "mean_reward": 369.6405779600128,
+      "std_reward": 14.221740236086138,
+      "survival_rate": 1.0
+    },
+    {
+      "label": "New seed A",
+      "mean_reward": 365.9699829057637,
+      "std_reward": 12.44583685564843,
+      "survival_rate": 1.0
+    },
+    {
+      "label": "New seed B",
+      "mean_reward": 363.34500263577235,
+      "std_reward": 20.625731775994712,
+      "survival_rate": 1.0
+    },
+    {
+      "label": "Easy climate",
+      "mean_reward": 369.6405779600128,
+      "std_reward": 14.221740236086138,
+      "survival_rate": 1.0
+    },
+    {
+      "label": "Hard climate",
+      "mean_reward": 369.6405779600128,
+      "std_reward": 14.221740236086138,
+      "survival_rate": 1.0
+    }
+  ],
+  "reinforce": [
+    {
+      "label": "Training seed",
+      "mean_reward": 8.672200901302233,
+      "std_reward": 12.961419926345137,
+      "survival_rate": 0.0
+    },
+    {
+      "label": "New seed A",
+      "mean_reward": 11.978599918370222,
+      "std_reward": 9.84150122047142,
+      "survival_rate": 0.0
+    },
+    {
+      "label": "New seed B",
+      "mean_reward": 10.679077007963492,
+      "std_reward": 11.485637248160812,
+      "survival_rate": 0.0
+    },
+    {
+      "label": "Easy climate",
+      "mean_reward": 8.672200901302233,
+      "std_reward": 12.961419926345137,
+      "survival_rate": 0.0
+    },
+    {
+      "label": "Hard climate",
+      "mean_reward": 8.672200901302233,
+      "std_reward": 12.961419926345137,
+      "survival_rate": 0.0
+    }
+  ]
+}
