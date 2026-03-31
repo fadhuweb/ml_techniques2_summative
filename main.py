@@ -1,16 +1,3 @@
-"""
-Main Entry Point — Run Best Performing Model
-==============================================
-
-Loads the best trained model (auto-detects from models/ directory)
-and runs it in the Arcade (OpenGL) visualization with terminal verbose.
-
-Usage:
-    python main.py                    # Auto-detect best model
-    python main.py --model ppo        # Force specific algorithm
-    python main.py --random           # Random agent (no model)
-"""
-
 import os
 import sys
 import argparse
@@ -175,4 +162,4 @@ def main():
 
 if __name__ == "__main__":
     main()# Main entry point — loads best performing model and runs the Pygame simulation
-# TODO: Step 5 — implement after training is complete
+
